@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { SessionState } from '../../CodexAcpServer';
 import type { ServerNotification } from '../../app-server';
+import { createFileChangeUpdate } from '../../CodexToolCallMapper';
+import type { ThreadItem } from '../../app-server/v2';
 import { createCodexMockTestFixture, createTestSessionState, setupPromptAndSendNotifications, type CodexMockTestFixture } from '../acp-test-utils';
 import {AgentMode} from "../../AgentMode";
 
@@ -53,14 +55,7 @@ describe('CodexEventHandler - file change events', () => {
                         {
                             path: '/test/project/NewFile.kt',
                             kind: { type: 'add' },
-                            diff: `--- /dev/null
-+++ /test/project/NewFile.kt
-@@ -0,0 +1,5 @@
-+package test.project
-+
-+class NewFile {
-+    fun hello() = "Hello"
-+}`,
+                            diff: 'package test.project\n\nclass NewFile {\n    fun hello() = "Hello"\n}\n',
                         },
                     ],
                     status: 'completed',
@@ -88,18 +83,12 @@ describe('CodexEventHandler - file change events', () => {
                         {
                             path: '/test/project/FileA.kt',
                             kind: { type: 'add' },
-                            diff: `--- /dev/null
-+++ /test/project/FileA.kt
-@@ -0,0 +1 @@
-+class FileA`,
+                            diff: 'class FileA\n',
                         },
                         {
                             path: '/test/project/FileB.kt',
                             kind: { type: 'add' },
-                            diff: `--- /dev/null
-+++ /test/project/FileB.kt
-@@ -0,0 +1 @@
-+class FileB`,
+                            diff: 'class FileB\n',
                         },
                     ],
                     status: 'completed',
@@ -156,12 +145,7 @@ describe('CodexEventHandler - file change events', () => {
                         {
                             path: '/test/project/OldFile.kt',
                             kind: { type: 'delete' },
-                            diff: `--- /test/project/OldFile.kt
-+++ /dev/null
-@@ -1,3 +0,0 @@
--package test.project
--
--class OldFile {}`,
+                            diff: 'package test.project\n\nclass OldFile {}',
                         },
                     ],
                     status: 'completed',
@@ -222,12 +206,7 @@ describe('CodexEventHandler - file change events', () => {
                         {
                             path: '/test/project/OldFile.kt',
                             kind: { type: 'delete' },
-                            diff: `--- /test/project/OldFile.kt
-+++ /dev/null
-@@ -1,3 +0,0 @@
--package test.project
--
--class OldFile {}`,
+                            diff: 'package test.project\n\nclass OldFile {}',
                         },
                     ],
                     status: 'completed',
@@ -270,5 +249,104 @@ describe('CodexEventHandler - file change events', () => {
         await expect(mockFixture.getAcpConnectionDump(['id'])).toMatchFileSnapshot(
             'data/file-change-delete-raw-content.json'
         );
+    });
+
+    it('should ignore broken unified diffs in update file changes', async () => {
+        const fileChange: ThreadItem & { type: 'fileChange' } = {
+            type: 'fileChange',
+            id: 'file-change-broken-diff',
+            changes: [
+                {
+                    path: '/test/project/OldFile.kt',
+                    kind: { type: 'update', move_path: null },
+                    diff:
+`--- /test/project/OldFile.kt
++++ /test/project/OldFile.kt
+@@ broken @@
++class UpdatedFile
+`,
+                },
+            ],
+            status: 'completed',
+        };
+
+        const updateEvent = await createFileChangeUpdate(fileChange);
+        expect(updateEvent).toMatchObject({
+            content: [],
+        });
+    });
+
+    it('should parse update diffs with move metadata appended', async () => {
+        mockFileContent('/test/project/OriginalFile.kt', 'old code line\n');
+
+        const fileChange: ThreadItem = {
+            type: 'fileChange',
+            id: 'file-change-move-metadata',
+            changes: [
+                {
+                    path: '/test/project/OriginalFile.kt',
+                    kind: {
+                        type: 'update',
+                        move_path: '/test/project/NewFile.kt',
+                    },
+                    diff:
+`@@ -1 +1 @@
+-old code line
++new code line
+
+
+Moved to: /test/project/NewFile.kt`,
+                },
+            ],
+            status: 'inProgress',
+        };
+
+        const updateEvent = await createFileChangeUpdate(fileChange);
+        expect(updateEvent).toMatchObject({
+            content: [
+                {
+                    oldText: 'old code line\n',
+                    newText: 'new code line\n',
+                    path: '/test/project/NewFile.kt',
+                },
+            ],
+        });
+    });
+
+    it('should parse update diffs when the original file was moved already', async () => {
+        mockFileContent('/test/project/NewFile.kt', 'new code line\n');
+
+        const fileChange: ThreadItem = {
+            type: 'fileChange',
+            id: 'file-change-moved-file-exists',
+            changes: [
+                {
+                    path: '/test/project/OriginalFile.kt',
+                    kind: {
+                        type: 'update',
+                        move_path: '/test/project/NewFile.kt',
+                    },
+                    diff:
+`@@ -1 +1 @@
+-old code line
++new code line
+
+
+Moved to: /test/project/NewFile.kt`,
+                },
+            ],
+            status: 'inProgress',
+        };
+
+        const updateEvent = await createFileChangeUpdate(fileChange);
+        expect(updateEvent).toMatchObject({
+            content: [
+                {
+                    oldText: 'old code line\n',
+                    newText: 'new code line\n',
+                    path: '/test/project/NewFile.kt',
+                },
+            ],
+        });
     });
 });

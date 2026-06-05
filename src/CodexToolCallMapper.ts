@@ -1,5 +1,5 @@
 import type { ToolCallContent } from "@agentclientprotocol/sdk";
-import { applyPatch, parsePatch } from "diff";
+import { applyPatch, parsePatch, reversePatch } from "diff";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { UpdateSessionEvent } from "./ACPSessionConnection";
@@ -20,6 +20,7 @@ import type {
     ThreadItem,
 } from "./app-server/v2";
 import type { JsonValue } from "./app-server/serde_json/JsonValue";
+import {logger} from "./Logger";
 
 type CodexItemStatus = CommandExecutionStatus | PatchApplyStatus | McpToolCallStatus | DynamicToolCallStatus;
 type AcpToolCallStatus = "pending" | "in_progress" | "completed" | "failed";
@@ -257,93 +258,98 @@ function createSearchTitle(query: string | null, path: string | null): string {
 }
 
 async function createPatchContent(change: FileUpdateChange): Promise<ToolCallContent | null> {
-    if (change.kind.type === "add" && !isUnifiedDiff(change.diff)) {
-        // For new files, diff may contain raw file content instead of a patch.
-        return {
-            type: "diff",
-            oldText: null,
-            newText: change.diff,
-            path: change.path,
-            _meta: {
-                kind: "add",
-            },
-        };
-    }
-
-    if (change.kind.type === "delete") {
-        // If the patch deletes a file, the old content may be only available from the diff.
-        const oldContent = await readFile(change.path, { encoding: "utf8"} ).catch(() =>
-            isUnifiedDiff(change.diff) ? patchToDeletedContent(change.diff) : change.diff
-        );
-
-        return {
-            type: "diff",
-            oldText: oldContent,
-            newText: "",
-            path: change.path,
-            _meta: {
-                kind: "delete",
-            }
+    try {
+        switch (change.kind.type) {
+            case "add":
+                return await createAddFileContent(change);
+            case "delete":
+                return await createDeleteFileContent(change);
+            case "update":
+                return await createUpdateFileContent(change);
         }
-    }
-
-    const oldContent = change.kind.type === "add" ? "" : await readFile(change.path, { encoding: "utf8" }).catch(() => null);
-    if (oldContent === null) {
+    } catch (error) {
+        logger.log(`Error processing file update change: ${error}`);
         return null;
     }
+}
 
-    const newContent = applyPatch(oldContent, change.diff);
-    if (newContent === false) {
-        return null;
-    }
+async function createAddFileContent(change: FileUpdateChange): Promise<ToolCallContent | null> {
     return {
         type: "diff",
-        oldText: change.kind.type === "add" ? null : oldContent,
-        newText: newContent,
+        oldText: null,
+        newText: change.diff, // app-server always returns file content instead of diff
         path: change.path,
         _meta: {
-            kind: change.kind.type,
+            kind: "add",
         },
     };
 }
 
-function isUnifiedDiff(content: string): boolean {
-    return content.startsWith("--- ") || content.includes("\n--- ");
+async function createUpdateFileContent(change: FileUpdateChange): Promise<ToolCallContent | null> {
+    if (change.kind.type !== "update") return null;
+
+    const unifiedDiff = recoverCorruptedDiff(change.diff);
+    const movePath = change.kind.move_path;
+
+    const oldContent = await readFileContent(change.path);
+    if (oldContent !== null) {
+        const patchedContent = applyPatch(oldContent, unifiedDiff);
+        if (patchedContent === false) return null;
+        return createUpdateDiffContent(movePath ?? change.path, oldContent, patchedContent);
+    }
+
+    if (!movePath) return null;
+    const newContent = await readFileContent(movePath);
+    if (newContent === null) return null;
+
+    const revertedPatch = revertPatch(unifiedDiff);
+    if (!revertedPatch) return null;
+
+    const revertedContent = applyPatch(newContent, revertedPatch);
+    if (revertedContent === false) return null;
+
+    return createUpdateDiffContent(movePath, revertedContent, newContent);
+}
+
+function revertPatch(unifiedDiff: string) {
+    const [patch] = parsePatch(unifiedDiff);
+    if (!patch) return null;
+
+    return reversePatch(patch);
+}
+
+function createUpdateDiffContent(path: string, oldText: string, newText: string): ToolCallContent {
+    return {
+        type: "diff",
+        oldText,
+        newText,
+        path,
+        _meta: {
+            kind: "update",
+        },
+    };
+}
+
+async function createDeleteFileContent(change: FileUpdateChange): Promise<ToolCallContent> {
+    return {
+        type: "diff",
+        oldText: change.diff, // app-server always returns file content instead of diff
+        newText: "",
+        path: change.path,
+        _meta: {
+            kind: "delete",
+        }
+    }
+}
+
+async function readFileContent(filePath: string): Promise<string | null> {
+    return await readFile(filePath, { encoding: "utf8" }).catch(() => null);
 }
 
 /**
- * Recreates the content of a deleted file from the unified diff.
- * @param unifiedDiff The unified diff of the file deletion patch
+ * Fix unified diff content corrupted by codex agent.
+ * Removes synthetic "Moved to" from the end.
  */
-function patchToDeletedContent(unifiedDiff: string): string | null {
-    try {
-        const [patch] = parsePatch(unifiedDiff);
-        if (!patch || patch.hunks.length === 0) {
-            return null;
-        }
-
-        const oldLines: string[] = [];
-        let hasNoTrailingNewlineMarker = false;
-
-        for (const hunk of patch.hunks) {
-            for (const line of hunk.lines) {
-                if (line === "\\ No newline at end of file") {
-                    hasNoTrailingNewlineMarker = true;
-                    continue;
-                }
-                if (line.startsWith("-") || line.startsWith(" ")) {
-                    oldLines.push(line.slice(1));
-                }
-            }
-        }
-
-        if (oldLines.length === 0) {
-            return "";
-        }
-
-        const oldText = oldLines.join("\n");
-        return hasNoTrailingNewlineMarker || !unifiedDiff.endsWith("\n") ? oldText : `${oldText}\n`;
-    } catch {
-        return null;
-    }
+function recoverCorruptedDiff(diff: string): string {
+    return diff.replace(/\n\nMoved to: .*$/, "");
 }
