@@ -199,7 +199,7 @@ export class CodexAcpClient {
         return this.codexClient.accountRead({refreshToken: false});
     }
 
-    async resumeSession(request: acp.ResumeSessionRequest): Promise<SessionMetadata> {
+    async resumeSession(request: acp.ResumeSessionRequest, onSubscribed?: () => void): Promise<SessionMetadata> {
         await this.refreshSkills(request.cwd, request._meta);
 
         const response = await this.codexClient.threadResume({
@@ -208,6 +208,7 @@ export class CodexAcpClient {
             modelProvider: this.getResumeModelProvider(),
             threadId: request.sessionId,
         });
+        onSubscribed?.();
         const codexModels = await this.fetchAvailableModels();
         const currentModelId = this.createModelId(codexModels, response.model, response.reasoningEffort).toString();
         return {
@@ -218,13 +219,14 @@ export class CodexAcpClient {
         }
     }
 
-    async loadSession(request: acp.LoadSessionRequest): Promise<SessionMetadataWithThread> {
+    async loadSession(request: acp.LoadSessionRequest, onSubscribed?: () => void): Promise<SessionMetadataWithThread> {
         const response = await this.codexClient.threadResume({
             config: await this.createSessionConfig(request.cwd, request.mcpServers ?? []),
             cwd: request.cwd,
             modelProvider: this.getResumeModelProvider(),
             threadId: request.sessionId,
         });
+        onSubscribed?.();
         const codexModels = await this.fetchAvailableModels();
         const currentModelId = this.createModelId(codexModels, response.model, response.reasoningEffort).toString();
         return {
@@ -256,6 +258,14 @@ export class CodexAcpClient {
             models: codexModels,
             currentServiceTier: response.serviceTier ?? null,
         };
+    }
+
+    async closeSession(sessionId: string): Promise<void> {
+        try {
+            await this.codexClient.threadUnsubscribe({threadId: sessionId});
+        } finally {
+            this.codexClient.clearThreadHandlers(sessionId);
+        }
     }
 
     async awaitMcpServerStartup(serverNames: Array<string>, afterVersion: number): Promise<McpStartupResult> {
@@ -385,11 +395,16 @@ export class CodexAcpClient {
         serviceTier: ServiceTier | null,
         disableSummary: boolean,
         cwd: string,
-    ): Promise<TurnCompletedNotification> {
+        onTurnStarted?: (turnId: string) => void,
+        shouldCancel?: () => boolean,
+    ): Promise<TurnCompletedNotification | null> {
         const input = buildPromptItems(request.prompt);
         const effort = modelId.effort as ReasoningEffort | null; //TODO remove unsafe conversion
 
         await this.refreshSkills(cwd, request._meta);
+        if (shouldCancel?.()) {
+            return null;
+        }
         return await this.codexClient.runTurn({
             threadId: request.sessionId,
             input: input,
@@ -399,7 +414,15 @@ export class CodexAcpClient {
             effort: effort,
             model: modelId.model,
             serviceTier: serviceTier,
-        });
+        }, onTurnStarted);
+    }
+
+    resolveTurnInterrupted(params: { threadId: string, turnId: string }): void {
+        this.codexClient.resolveTurnInterrupted(params.threadId, params.turnId);
+    }
+
+    markTurnStale(params: { threadId: string, turnId: string }): void {
+        this.codexClient.markTurnStale(params.threadId, params.turnId);
     }
 
     async listSkills(params?: SkillsListParams): Promise<SkillsListResponse> {
