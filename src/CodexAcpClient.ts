@@ -326,21 +326,23 @@ export class CodexAcpClient {
             return configWithWorkspaceRoots;
         }
 
-        // Deduplicates new servers against existing config to prevent Codex from deep-merging
-        // incompatible field types (e.g., mixing url and stdio schemas).
-        const existingNames = await this.getConfigMcpServerNames(projectPath);
         const requestedServers = mcpServers.map(mcp => ({
             name: sanitizeMcpServerName(mcp.name),
             server: mcp,
         }));
-        const uniqueServers = requestedServers.filter(mcp => !existingNames.has(mcp.name));
-        if (uniqueServers.length === 0) {
+        let serversToConfigure = requestedServers;
+        if (shouldDeduplicateMcpConflicts()) {
+            // Prevents Codex from deep-merging incompatible field types, such as url and stdio schemas.
+            const existingNames = await this.getConfigMcpServerNames(projectPath);
+            serversToConfigure = requestedServers.filter(mcp => !existingNames.has(mcp.name));
+        }
+        if (serversToConfigure.length === 0) {
             return configWithWorkspaceRoots;
         }
 
         return {
             ...configWithWorkspaceRoots,
-            "mcp_servers": Object.fromEntries(uniqueServers.map(mcp => [mcp.name, this.createMcpSeverConfig(mcp.server)])),
+            "mcp_servers": Object.fromEntries(serversToConfigure.map(mcp => [mcp.name, this.createMcpSeverConfig(mcp.server)])),
         };
     }
 
@@ -737,6 +739,11 @@ function formatUriAsLink(name: string | null | undefined, uri: string): string {
         return `[@${fileName}](${uri})`;
     }
     return uri;
+}
+
+function shouldDeduplicateMcpConflicts(): boolean {
+    const disabledByEnv = process.env["DISABLE_MCP_CONFIG_FILTERING"] === "true";
+    return !disabledByEnv;
 }
 
 interface GatewayConfig {
