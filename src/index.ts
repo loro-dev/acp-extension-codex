@@ -12,7 +12,12 @@ import packageJson from "../package.json";
 import {logger} from "./Logger";
 import {runLoginCommand} from "./login";
 import {runCodexCli} from "./CodexCli";
-import {LEGACY_SET_SESSION_MODEL_METHOD} from "./AcpExtensions";
+import {
+    LEGACY_SET_SESSION_MODEL_METHOD,
+    THREAD_GOAL_CLEAR_METHOD,
+    THREAD_GOAL_GET_METHOD,
+    THREAD_GOAL_SET_METHOD,
+} from "./AcpExtensions";
 
 const emptyExtensionParamsParser = z.preprocess(
     (params) => params ?? {},
@@ -22,6 +27,17 @@ const emptyExtensionParamsParser = z.preprocess(
 const legacySetSessionModelParamsParser = z.object({
     sessionId: z.string(),
     modelId: z.string(),
+}).passthrough();
+
+const threadGoalParamsParser = z.object({
+    threadId: z.string(),
+}).passthrough();
+
+const threadGoalSetParamsParser = z.object({
+    threadId: z.string(),
+    objective: z.string().nullable().optional(),
+    status: z.enum(["active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"]).nullable().optional(),
+    tokenBudget: z.number().nullable().optional(),
 }).passthrough();
 
 if (process.argv.includes("--version")) {
@@ -129,5 +145,8 @@ function startAcpServer() {
         .onRequest("authentication/status", emptyExtensionParamsParser, (ctx) => getAgent().extMethod("authentication/status", ctx.params))
         .onRequest("authentication/logout", emptyExtensionParamsParser, (ctx) => getAgent().extMethod("authentication/logout", ctx.params))
         .onRequest(LEGACY_SET_SESSION_MODEL_METHOD, legacySetSessionModelParamsParser, (ctx) => getAgent().extMethod(LEGACY_SET_SESSION_MODEL_METHOD, ctx.params))
+        .onRequest(THREAD_GOAL_GET_METHOD, threadGoalParamsParser, (ctx) => getAgent().extMethod(THREAD_GOAL_GET_METHOD, ctx.params))
+        .onRequest(THREAD_GOAL_SET_METHOD, threadGoalSetParamsParser, (ctx) => getAgent().extMethod(THREAD_GOAL_SET_METHOD, ctx.params))
+        .onRequest(THREAD_GOAL_CLEAR_METHOD, threadGoalParamsParser, (ctx) => getAgent().extMethod(THREAD_GOAL_CLEAR_METHOD, ctx.params))
         .connect(acpJsonStream);
 }

@@ -31,10 +31,10 @@ Run from sources
 
 Run from binaries
 
-1. Download a `codex-acp-<platform>.zip` archive from https://github.com/agentclientprotocol/codex-acp/releases
+1. Download an `acp-extension-codex-<platform>.zip` archive from https://github.com/Leeeon233/acp-extension-codex/releases
 2. Unzip the archive:
    ```bash
-   unzip codex-acp-<platform>.zip
+   unzip acp-extension-codex-<platform>.zip
    ```
 3. Adjust ACP client config
 
@@ -42,7 +42,7 @@ Run from binaries
 {
   "agent_servers": {
     "Codex (app-server)": {
-      "command": "/path/to/codex-acp",
+      "command": "/path/to/acp-extension-codex",
       "env": {
         "CODEX_PATH": "/path/to/codex"
       }

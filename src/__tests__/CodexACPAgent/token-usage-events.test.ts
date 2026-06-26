@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ServerNotification } from '../../app-server';
 import { createCodexMockTestFixture, createTestSessionState, type CodexMockTestFixture } from '../acp-test-utils';
 import type { TokenUsageBreakdown } from '../../app-server/v2';
+import { ACP_EXT_SESSION_USAGE_UPDATE_METHOD } from '../../AcpExtensions';
 
 function createTokenUsageNotification(
     sessionId: string,
@@ -214,6 +215,44 @@ describe('Token Usage Events', () => {
             await expect(`${JSON.stringify(events[0], null, 2)}\n`).toMatchFileSnapshot('data/token-usage-session-update.json');
         });
 
+        it('should emit session_usage_update ext notification with total token breakdown', async () => {
+            const events = await setupPromptAndReturnEvents([
+                createTokenUsageNotification(sessionId, {
+                    total: {
+                        totalTokens: 5000,
+                        inputTokens: 4000,
+                        cachedInputTokens: 1000,
+                        outputTokens: 900,
+                        reasoningOutputTokens: 100,
+                    },
+                    last: {
+                        totalTokens: 2500,
+                        inputTokens: 2000,
+                        cachedInputTokens: 500,
+                        outputTokens: 450,
+                        reasoningOutputTokens: 50,
+                    },
+                    modelContextWindow: 128000,
+                }),
+            ])();
+
+            expect(events).toContainEqual({
+                method: 'notify',
+                args: [
+                    ACP_EXT_SESSION_USAGE_UPDATE_METHOD,
+                    {
+                        usage: {
+                            inputTokens: 4000,
+                            outputTokens: 900,
+                            cacheReadInputTokens: 1000,
+                            reasoningOutputTokens: 100,
+                            contextWindow: 128000,
+                        },
+                    },
+                ],
+            });
+        });
+
         it('should emit latest turn usage from multiple updates', async () => {
             const events = await setupPromptAndReturnEvents([
                 createTokenUsageNotification(sessionId, {
@@ -233,7 +272,8 @@ describe('Token Usage Events', () => {
                 }),
             ])();
 
-            await expect(`${JSON.stringify(events, null, 2)}\n`).toMatchFileSnapshot('data/token-usage-session-update-multiple.json');
+            const usageUpdateEvents = events.filter(event => event.method === 'sessionUpdate');
+            await expect(`${JSON.stringify(usageUpdateEvents, null, 2)}\n`).toMatchFileSnapshot('data/token-usage-session-update-multiple.json');
         });
 
         it('should skip usage_update when model context window is unavailable', async () => {
@@ -245,7 +285,22 @@ describe('Token Usage Events', () => {
                 }),
             ])();
 
-            expect(events).toEqual([]);
+            expect(events.filter(event => event.method === 'sessionUpdate')).toEqual([]);
+            expect(events).toContainEqual({
+                method: 'notify',
+                args: [
+                    ACP_EXT_SESSION_USAGE_UPDATE_METHOD,
+                    {
+                        usage: {
+                            inputTokens: 4000,
+                            outputTokens: 900,
+                            cacheReadInputTokens: 1000,
+                            reasoningOutputTokens: 100,
+                            contextWindow: null,
+                        },
+                    },
+                ],
+            });
         });
     });
 });

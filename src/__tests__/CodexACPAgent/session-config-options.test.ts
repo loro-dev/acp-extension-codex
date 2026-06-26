@@ -7,6 +7,7 @@ import {
 } from "../../ModelConfigOption";
 import type {Model, ReasoningEffortOption} from "../../app-server/v2";
 import {LEGACY_SET_SESSION_MODEL_METHOD} from "../../AcpExtensions";
+import {PLAN_MODE_CONFIG_ID} from "../../PlanModeConfig";
 
 const lowEffort: ReasoningEffortOption = {reasoningEffort: "low", description: "Fast"};
 const mediumEffort: ReasoningEffortOption = {reasoningEffort: "medium", description: "Balanced"};
@@ -49,12 +50,12 @@ async function createSession(currentModelId: string, availableModels: Array<Mode
 }
 
 describe("Session config options", () => {
-    it("exposes mode, model, reasoning_effort and fast-mode in the new session response", async () => {
+    it("exposes mode, model, reasoning_effort, fast-mode and plan-mode in the new session response", async () => {
         const {fast, slow} = buildModels();
         const {response} = await createSession("fast-model[medium]", [fast, slow]);
 
         const ids = response.configOptions?.map(o => o.id);
-        expect(ids).toEqual([MODE_CONFIG_ID, MODEL_CONFIG_ID, REASONING_EFFORT_CONFIG_ID, "fast-mode"]);
+        expect(ids).toEqual([MODE_CONFIG_ID, MODEL_CONFIG_ID, REASONING_EFFORT_CONFIG_ID, "fast-mode", PLAN_MODE_CONFIG_ID]);
 
         const modelOption = response.configOptions?.find(o => o.id === MODEL_CONFIG_ID);
         expect(modelOption).toMatchObject({

@@ -27,5 +27,9 @@ jobs:
         run: npm run typecheck
       - name: Run unit tests
         run: npm test
+      - name: Build npm package
+        run: npm run build
+      - name: Validate npm package contents
+        run: npm pack --dry-run
       - name: Bundle binaries
         run: npm run bundle:all

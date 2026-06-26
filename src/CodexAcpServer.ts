@@ -7,12 +7,19 @@ import {type CodexAuthRequest, getCodexAuthMethods} from "./CodexAuthMethod";
 import {CodexAcpClient, type SessionMetadata, type SessionMetadataWithThread} from "./CodexAcpClient";
 import type {McpStartupResult} from "./CodexAppServerClient";
 import {ACPSessionConnection, type AcpClientConnection, type UpdateSessionEvent} from "./ACPSessionConnection";
-import type {InputModality, ReasoningEffort} from "./app-server";
+import type {CollaborationMode, InputModality, ReasoningEffort} from "./app-server";
 import type {
     Account,
     CollabAgentToolCallStatus,
     Model,
     ReasoningEffortOption,
+    ThreadGoalClearParams,
+    ThreadGoalClearResponse,
+    ThreadGoalGetParams,
+    ThreadGoalGetResponse,
+    ThreadGoalSetParams,
+    ThreadGoalSetResponse,
+    ThreadGoalStatus,
     Thread,
     ThreadItem,
     UserInput
@@ -41,8 +48,11 @@ import {
     type LegacySessionModelState,
     type LegacySetSessionModelRequest,
     type LegacySetSessionModelResponse,
-    isExtMethodRequest,
     LEGACY_SET_SESSION_MODEL_METHOD,
+    THREAD_GOAL_CLEAR_METHOD,
+    THREAD_GOAL_GET_METHOD,
+    THREAD_GOAL_SET_METHOD,
+    resolveExtMethod,
 } from "./AcpExtensions";
 import {
     createCommandExecutionCompleteUpdate,
@@ -62,6 +72,12 @@ import {
     modelSupportsFast,
     resolveFastServiceTier,
 } from "./FastModeConfig";
+import {
+    createPlanModeConfigOption,
+    PLAN_MODE_CONFIG_ID,
+    PLAN_MODE_OFF,
+    PLAN_MODE_ON,
+} from "./PlanModeConfig";
 import packageJson from "../package.json";
 import {isJetBrains2026_1Client} from "./JBUtils";
 import {resolveTerminalOutputMode, type TerminalOutputMode} from "./TerminalOutputMode";
@@ -83,6 +99,8 @@ export interface SessionState {
     additionalDirectories: string[];
     fastModeEnabled: boolean;
     currentModelSupportsFast: boolean;
+    planModeEnabled: boolean;
+    planModeExplicitlySet: boolean;
     sessionMcpServers?: Array<string>;
     terminalOutputMode: TerminalOutputMode;
 }
@@ -103,6 +121,15 @@ interface ActivePrompt {
     requestClose: () => void;
     complete: () => void;
 }
+
+const THREAD_GOAL_STATUSES: ReadonlySet<ThreadGoalStatus> = new Set([
+    "active",
+    "paused",
+    "blocked",
+    "usageLimited",
+    "budgetLimited",
+    "complete",
+]);
 
 export class CodexAcpServer {
     private static readonly MODEL_NAME_TOKEN_OVERRIDES: Record<string, string> = {
@@ -197,11 +224,11 @@ export class CodexAcpServer {
     }
 
     async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
-        const methodRequest = { method: method, params: params };
-        if (!isExtMethodRequest(methodRequest)) {
+        const extMethod = resolveExtMethod(method);
+        if (!extMethod) {
             return {};
         }
-        switch (methodRequest.method) {
+        switch (extMethod) {
             case "authentication/status":
                 return await this.runWithProcessCheck(() => this.codexAcpClient.getAuthenticationStatus());
             case "authentication/logout": {
@@ -209,7 +236,13 @@ export class CodexAcpServer {
                 return {};
             }
             case LEGACY_SET_SESSION_MODEL_METHOD:
-                return await this.unstable_setSessionModel(this.parseLegacySetSessionModelParams(methodRequest.params));
+                return await this.unstable_setSessionModel(this.parseLegacySetSessionModelParams(params));
+            case THREAD_GOAL_GET_METHOD:
+                return await this.getThreadGoal(this.parseThreadGoalGetParams(params));
+            case THREAD_GOAL_SET_METHOD:
+                return await this.setThreadGoal(this.parseThreadGoalSetParams(params));
+            case THREAD_GOAL_CLEAR_METHOD:
+                return await this.clearThreadGoal(this.parseThreadGoalClearParams(params));
         }
     }
 
@@ -376,6 +409,8 @@ export class CodexAcpServer {
             additionalDirectories: sessionMetadata.additionalDirectories,
             fastModeEnabled: sessionMetadata.currentServiceTier === "fast",
             currentModelSupportsFast: currentModelSupportsFast,
+            planModeEnabled: false,
+            planModeExplicitlySet: false,
             sessionMcpServers: sessionMcpServers,
             terminalOutputMode: this.terminalOutputMode,
         }
@@ -602,6 +637,9 @@ export class CodexAcpServer {
             case FAST_MODE_CONFIG_ID:
                 this.applyFastModeChange(sessionState, value);
                 break;
+            case PLAN_MODE_CONFIG_ID:
+                this.applyPlanModeChange(sessionState, value);
+                break;
             case MODE_CONFIG_ID:
                 this.applyModeChange(sessionState, value);
                 break;
@@ -625,6 +663,14 @@ export class CodexAcpServer {
             throw RequestError.invalidParams();
         }
         sessionState.fastModeEnabled = value === FAST_MODE_ON;
+    }
+
+    private applyPlanModeChange(sessionState: SessionState, value: string): void {
+        if (value !== PLAN_MODE_ON && value !== PLAN_MODE_OFF) {
+            throw RequestError.invalidParams();
+        }
+        sessionState.planModeEnabled = value === PLAN_MODE_ON;
+        sessionState.planModeExplicitlySet = true;
     }
 
     private applyModeChange(sessionState: SessionState, value: string): void {
@@ -693,6 +739,18 @@ export class CodexAcpServer {
         return {};
     }
 
+    async getThreadGoal(params: ThreadGoalGetParams): Promise<ThreadGoalGetResponse> {
+        return await this.runWithProcessCheck(() => this.codexAcpClient.getThreadGoal(params));
+    }
+
+    async setThreadGoal(params: ThreadGoalSetParams): Promise<ThreadGoalSetResponse> {
+        return await this.runWithProcessCheck(() => this.codexAcpClient.setThreadGoal(params));
+    }
+
+    async clearThreadGoal(params: ThreadGoalClearParams): Promise<ThreadGoalClearResponse> {
+        return await this.runWithProcessCheck(() => this.codexAcpClient.clearThreadGoal(params));
+    }
+
     private parseLegacySetSessionModelParams(params: Record<string, unknown>): LegacySetSessionModelRequest {
         const sessionId = params["sessionId"];
         const modelId = params["modelId"];
@@ -705,6 +763,71 @@ export class CodexAcpServer {
         };
     }
 
+    private parseThreadGoalGetParams(params: Record<string, unknown>): ThreadGoalGetParams {
+        return {
+            threadId: this.parseThreadGoalThreadId(params),
+        };
+    }
+
+    private parseThreadGoalClearParams(params: Record<string, unknown>): ThreadGoalClearParams {
+        return {
+            threadId: this.parseThreadGoalThreadId(params),
+        };
+    }
+
+    private parseThreadGoalSetParams(params: Record<string, unknown>): ThreadGoalSetParams {
+        const parsed: ThreadGoalSetParams = {
+            threadId: this.parseThreadGoalThreadId(params),
+        };
+
+        if (Object.prototype.hasOwnProperty.call(params, "objective")) {
+            parsed.objective = this.parseOptionalString(params["objective"]);
+        }
+        if (Object.prototype.hasOwnProperty.call(params, "status")) {
+            parsed.status = this.parseOptionalThreadGoalStatus(params["status"]);
+        }
+        if (Object.prototype.hasOwnProperty.call(params, "tokenBudget")) {
+            parsed.tokenBudget = this.parseOptionalNumber(params["tokenBudget"]);
+        }
+
+        return parsed;
+    }
+
+    private parseThreadGoalThreadId(params: Record<string, unknown>): string {
+        const threadId = params["threadId"];
+        if (typeof threadId !== "string") {
+            throw RequestError.invalidParams();
+        }
+        return threadId;
+    }
+
+    private parseOptionalString(value: unknown): string | null {
+        if (value === null || typeof value === "string") {
+            return value;
+        }
+        throw RequestError.invalidParams();
+    }
+
+    private parseOptionalNumber(value: unknown): number | null {
+        if (value === null) {
+            return null;
+        }
+        if (typeof value === "number" && Number.isFinite(value)) {
+            return value;
+        }
+        throw RequestError.invalidParams();
+    }
+
+    private parseOptionalThreadGoalStatus(value: unknown): ThreadGoalStatus | null {
+        if (value === null) {
+            return null;
+        }
+        if (typeof value === "string" && THREAD_GOAL_STATUSES.has(value as ThreadGoalStatus)) {
+            return value as ThreadGoalStatus;
+        }
+        throw RequestError.invalidParams();
+    }
+
     private createSessionConfigOptions(sessionState: SessionState): Array<acp.SessionConfigOption> {
         const currentModelId = ModelId.fromString(sessionState.currentModelId);
         return [
@@ -712,6 +835,7 @@ export class CodexAcpServer {
             createModelConfigOption(sessionState.availableModels, currentModelId.model),
             createReasoningEffortConfigOption(sessionState.supportedReasoningEfforts, currentModelId.effort),
             createFastModeConfigOption(sessionState.fastModeEnabled),
+            createPlanModeConfigOption(sessionState.planModeEnabled),
         ];
     }
 
@@ -729,6 +853,20 @@ export class CodexAcpServer {
     private isSessionConfigEnabled(): boolean {
         // Temporarily disabled for JB IDEs 2026.1 due to issues in session_config (LLM-28118)
         return !isJetBrains2026_1Client(this.clientInfo);
+    }
+
+    private createPlanModeCollaborationMode(sessionState: SessionState, modelId: ModelId): CollaborationMode | null {
+        if (!sessionState.planModeEnabled && !sessionState.planModeExplicitlySet) {
+            return null;
+        }
+        return {
+            mode: sessionState.planModeEnabled ? "plan" : "default",
+            settings: {
+                model: modelId.model,
+                reasoning_effort: modelId.effort as ReasoningEffort,
+                developer_instructions: null,
+            },
+        };
     }
 
     private publishAvailableCommandsAsync(sessionId: string) {
@@ -827,6 +965,8 @@ export class CodexAcpServer {
             additionalDirectories: sessionMetadata.additionalDirectories,
             fastModeEnabled: sessionMetadata.currentServiceTier === "fast",
             currentModelSupportsFast: currentModelSupportsFast,
+            planModeEnabled: false,
+            planModeExplicitlySet: false,
             sessionMcpServers: sessionMcpServers,
             terminalOutputMode: this.terminalOutputMode,
         };
@@ -1358,6 +1498,7 @@ export class CodexAcpServer {
                 sessionState.fastModeEnabled,
                 sessionState.currentModelSupportsFast,
             );
+            const collaborationMode = this.createPlanModeCollaborationMode(sessionState, modelId);
             pendingTurnStart = this.createPendingTurnStart();
             this.pendingTurnStarts.set(params.sessionId, pendingTurnStart);
             const sendPromptPromise = this.runWithProcessCheck(
@@ -1366,6 +1507,7 @@ export class CodexAcpServer {
                     agentMode,
                     modelId,
                     serviceTier,
+                    collaborationMode,
                     disableSummary,
                     sessionState.cwd,
                     sessionState.additionalDirectories,

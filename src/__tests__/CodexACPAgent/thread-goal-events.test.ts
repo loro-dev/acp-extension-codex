@@ -24,7 +24,7 @@ describe("CodexEventHandler - thread goal events", () => {
         agentMode: AgentMode.DEFAULT_AGENT_MODE,
     });
 
-    it("should send thread goal updates as agent messages", async () => {
+    it("should send thread goal updates using the app-server notification method", async () => {
         const goalUpdatedNotification: ServerNotification = {
             method: "thread/goal/updated",
             params: {
@@ -45,12 +45,18 @@ describe("CodexEventHandler - thread goal events", () => {
 
         await setupPromptAndSendNotifications(mockFixture, sessionId, sessionState, [goalUpdatedNotification]);
 
-        await expect(mockFixture.getAcpConnectionDump([])).toMatchFileSnapshot(
-            "data/thread-goal-updated.json"
-        );
+        expect(mockFixture.getAcpConnectionEvents([])).toEqual([
+            {
+                method: "notify",
+                args: [
+                    "thread/goal/updated",
+                    goalUpdatedNotification.params,
+                ],
+            },
+        ]);
     });
 
-    it("should format multiline thread goal updates", async () => {
+    it("should keep multiline thread goal updates out of transcript", async () => {
         const goalUpdatedNotification: ServerNotification = {
             method: "thread/goal/updated",
             params: {
@@ -71,12 +77,20 @@ describe("CodexEventHandler - thread goal events", () => {
 
         await setupPromptAndSendNotifications(mockFixture, sessionId, sessionState, [goalUpdatedNotification]);
 
-        await expect(mockFixture.getAcpConnectionDump([])).toMatchFileSnapshot(
-            "data/thread-goal-updated-multiline.json"
-        );
+        const events = mockFixture.getAcpConnectionEvents([]);
+        expect(events.filter(event => event.method === "sessionUpdate")).toEqual([]);
+        expect(events).toEqual([
+            {
+                method: "notify",
+                args: [
+                    "thread/goal/updated",
+                    goalUpdatedNotification.params,
+                ],
+            },
+        ]);
     });
 
-    it("should send thread goal cleared as an agent message", async () => {
+    it("should send thread goal cleared using the app-server notification method", async () => {
         const goalClearedNotification: ServerNotification = {
             method: "thread/goal/cleared",
             params: {
@@ -86,8 +100,14 @@ describe("CodexEventHandler - thread goal events", () => {
 
         await setupPromptAndSendNotifications(mockFixture, sessionId, sessionState, [goalClearedNotification]);
 
-        await expect(mockFixture.getAcpConnectionDump([])).toMatchFileSnapshot(
-            "data/thread-goal-cleared.json"
-        );
+        expect(mockFixture.getAcpConnectionEvents([])).toEqual([
+            {
+                method: "notify",
+                args: [
+                    "thread/goal/cleared",
+                    goalClearedNotification.params,
+                ],
+            },
+        ]);
     });
 });

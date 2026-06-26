@@ -7,6 +7,14 @@ import type {SessionState} from "./CodexAcpServer";
 import * as acp from "@agentclientprotocol/sdk";
 import {type PlanEntry, RequestError} from "@agentclientprotocol/sdk";
 import {ACPSessionConnection, type AcpClientConnection, type UpdateSessionEvent} from "./ACPSessionConnection";
+import {
+    ACP_EXT_CODEX_PROPOSED_PLAN_METHOD,
+    ACP_EXT_SESSION_RATE_LIMITS_METHOD,
+    ACP_EXT_SESSION_USAGE_UPDATE_METHOD,
+    type CodexProposedPlanExtNotification,
+    type SessionRateLimitsExtNotification,
+    type SessionUsageExtNotification,
+} from "./AcpExtensions";
 import type {
     AccountRateLimitsUpdatedNotification,
     AgentMessageDeltaNotification,
@@ -18,15 +26,15 @@ import type {
     ItemGuardianApprovalReviewStartedNotification,
     ItemCompletedNotification,
     ItemStartedNotification,
+    PlanDeltaNotification,
     ThreadItem,
     ModelReroutedNotification,
     ReasoningSummaryPartAddedNotification,
     ReasoningSummaryTextDeltaNotification,
     ReasoningTextDeltaNotification,
     TerminalInteractionNotification,
-    ThreadGoalClearedNotification,
-    ThreadGoalUpdatedNotification,
     ThreadTokenUsageUpdatedNotification,
+    TurnCompletedNotification,
     TurnPlanUpdatedNotification,
     WarningNotification
 } from "./app-server/v2";
@@ -69,6 +77,8 @@ export class CodexEventHandler {
     private readonly seenReasoningDeltaItemIds = new Set<string>();
     private readonly terminalCommandIds = new Set<string>();
     private readonly terminalCommandOutputIds = new Set<string>();
+    private proposedPlanMarkdown = "";
+    private proposedPlanTurnId: string | null = null;
 
     constructor(connection: AcpClientConnection, sessionState: SessionState) {
         this.connection = connection;
@@ -85,6 +95,7 @@ export class CodexEventHandler {
         if (updateEvent) {
             await session.update(updateEvent);
         }
+        await this.emitExtNotification(notification);
     }
 
     private async createUpdateEvent(notification: ServerNotification): Promise<UpdateSessionEvent | null> {
@@ -167,9 +178,9 @@ export class CodexEventHandler {
             case "fuzzyFileSearch/sessionCompleted":
                 return this.handleFuzzyFileSearchSessionCompleted(notification.params);
             case "thread/goal/updated":
-                return this.createThreadGoalUpdatedEvent(notification.params);
+                return null;
             case "thread/goal/cleared":
-                return this.createThreadGoalClearedEvent(notification.params);
+                return null;
             case "item/commandExecution/terminalInteraction":
                 return this.createTerminalInteractionEvent(notification.params);
             // ignored events
@@ -213,6 +224,112 @@ export class CodexEventHandler {
             case "process/exited":
                 return null;
         }
+    }
+
+    private async emitExtNotification(notification: ServerNotification): Promise<void> {
+        switch (notification.method) {
+            case "thread/tokenUsage/updated":
+                await this.notifyExt(
+                    ACP_EXT_SESSION_USAGE_UPDATE_METHOD,
+                    this.createSessionUsageExtNotification(notification.params)
+                );
+                return;
+            case "account/rateLimits/updated":
+                await this.notifyExt(
+                    ACP_EXT_SESSION_RATE_LIMITS_METHOD,
+                    this.createSessionRateLimitsExtNotification(notification.params)
+                );
+                return;
+            case "thread/goal/updated":
+                await this.connection.notify(notification.method, notification.params);
+                return;
+            case "thread/goal/cleared":
+                await this.connection.notify(notification.method, notification.params);
+                return;
+            case "item/plan/delta":
+                await this.emitCodexProposedPlanDelta(notification.params);
+                return;
+            case "turn/completed":
+                await this.emitCodexProposedPlanCompleted(notification.params);
+                return;
+            default:
+                return;
+        }
+    }
+
+    private async notifyExt<Params>(method: string, params: Params): Promise<void> {
+        const extMethod = method.startsWith("_") ? method : `_${method}`;
+        await this.connection.notify(extMethod, params);
+    }
+
+    private createSessionUsageExtNotification(params: ThreadTokenUsageUpdatedNotification): SessionUsageExtNotification {
+        const totalUsage = params.tokenUsage.total;
+        return {
+            usage: {
+                inputTokens: totalUsage.inputTokens,
+                outputTokens: totalUsage.outputTokens,
+                cacheReadInputTokens: totalUsage.cachedInputTokens,
+                reasoningOutputTokens: totalUsage.reasoningOutputTokens,
+                contextWindow: params.tokenUsage.modelContextWindow,
+            },
+        };
+    }
+
+    private async emitCodexProposedPlanDelta(params: PlanDeltaNotification): Promise<void> {
+        this.proposedPlanMarkdown += params.delta;
+        this.proposedPlanTurnId = params.turnId;
+        await this.notifyExt(
+            ACP_EXT_CODEX_PROPOSED_PLAN_METHOD,
+            this.createCodexProposedPlanExtNotification(
+                params.turnId,
+                this.proposedPlanMarkdown,
+                "delta"
+            )
+        );
+    }
+
+    private async emitCodexProposedPlanCompleted(params: TurnCompletedNotification): Promise<void> {
+        if (this.proposedPlanMarkdown.trim().length === 0) {
+            return;
+        }
+        await this.notifyExt(
+            ACP_EXT_CODEX_PROPOSED_PLAN_METHOD,
+            this.createCodexProposedPlanExtNotification(
+                this.proposedPlanTurnId ?? params.turn.id,
+                this.proposedPlanMarkdown,
+                "completed"
+            )
+        );
+    }
+
+    private createCodexProposedPlanExtNotification(
+        turnId: string,
+        markdown: string,
+        status: CodexProposedPlanExtNotification["status"],
+    ): CodexProposedPlanExtNotification {
+        return {
+            schemaVersion: 1,
+            sessionId: this.sessionState.sessionId,
+            turnId,
+            markdown,
+            status,
+            isLatest: true,
+        };
+    }
+
+    private createSessionRateLimitsExtNotification(
+        params: AccountRateLimitsUpdatedNotification
+    ): SessionRateLimitsExtNotification {
+        const rateLimits = params.rateLimits;
+        return {
+            planName: rateLimits.planType,
+            limitName: rateLimits.limitName,
+            limitId: rateLimits.limitId,
+            fiveHour: rateLimits.primary?.usedPercent ?? null,
+            sevenDay: rateLimits.secondary?.usedPercent ?? null,
+            fiveHourResetAt: rateLimits.primary?.resetsAt ?? null,
+            sevenDayResetAt: rateLimits.secondary?.resetsAt ?? null,
+        };
     }
 
     private createCodexSessionInfoUpdate(codexMetadata: Record<string, unknown>): UpdateSessionEvent {
@@ -262,48 +379,6 @@ export class CodexEventHandler {
                 type: "text",
                 text: `Model rerouted from ${event.fromModel} to ${event.toModel} (${event.reason}).\n\n`
             }
-        };
-    }
-
-    private createThreadGoalUpdatedEvent(event: ThreadGoalUpdatedNotification): UpdateSessionEvent {
-        const status = this.formatThreadGoalStatus(event.goal.status);
-        const objective = event.goal.objective.trim();
-        const text = objective.includes("\n")
-            ? `Goal updated (${status}):\n${objective}`
-            : `Goal updated (${status}): ${objective}`;
-        return {
-            sessionUpdate: "agent_message_chunk",
-            content: {
-                type: "text",
-                text,
-            },
-        };
-    }
-
-    private formatThreadGoalStatus(status: ThreadGoalUpdatedNotification["goal"]["status"]): string {
-        switch (status) {
-            case "active":
-                return "active";
-            case "paused":
-                return "paused";
-            case "budgetLimited":
-                return "budget limited";
-            case "blocked":
-                return "blocked";
-            case "usageLimited":
-                return "usage limited";
-            case "complete":
-                return "complete";
-        }
-    }
-
-    private createThreadGoalClearedEvent(_event: ThreadGoalClearedNotification): UpdateSessionEvent {
-        return {
-            sessionUpdate: "agent_message_chunk",
-            content: {
-                type: "text",
-                text: "Goal cleared.",
-            },
         };
     }
 
@@ -507,11 +582,11 @@ export class CodexEventHandler {
     static createMcpStartupUpdates(event: McpStartupCompleteEvent): UpdateSessionEvent[] {
         const failedUpdates = event.failed.map((server: McpStartupCompleteEvent["failed"][number]) => this.createMcpStartupToolCallUpdate(
             server.server,
-            `[codex-acp forwarded startup error] MCP server \`${server.server}\` failed to start: ${server.error}`
+            `[acp-extension-codex forwarded startup error] MCP server \`${server.server}\` failed to start: ${server.error}`
         ));
         const cancelledUpdates = event.cancelled.map((server: McpStartupCompleteEvent["cancelled"][number]) => this.createMcpStartupToolCallUpdate(
             server,
-            `[codex-acp forwarded startup error] MCP server \`${server}\` startup was cancelled.`
+            `[acp-extension-codex forwarded startup error] MCP server \`${server}\` startup was cancelled.`
         ));
 
         return [...failedUpdates, ...cancelledUpdates];

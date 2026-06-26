@@ -13,9 +13,10 @@ import {
 import type {ServerNotification} from "../../app-server";
 import type {SessionState} from "../../CodexAcpServer";
 import {AgentMode} from "../../AgentMode";
-import type {Model, ReviewStartResponse, TurnCompletedNotification, TurnStartParams} from "../../app-server/v2";
+import type {Model, ReviewStartResponse, ThreadGoal, TurnCompletedNotification, TurnStartParams} from "../../app-server/v2";
 import type {RateLimitsMap} from "../../RateLimitsMap";
 import {ModelId} from "../../ModelId";
+import {ACP_EXT_SESSION_RATE_LIMITS_METHOD} from "../../AcpExtensions";
 
 describe('ACP server test', { timeout: 40_000 }, () => {
 
@@ -86,7 +87,6 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             "model/list",
             "thread/started",
             "account/read",
-            "skills/list",
         ]);
         expect(loginRequest).toEqual({
             eventType: "request",
@@ -909,36 +909,25 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         const mockFixture = createCodexMockTestFixture();
         const codexAcpAgent = mockFixture.getCodexAcpAgent();
 
-        vi.spyOn(mockFixture.getCodexAcpClient(), "listSkills").mockResolvedValue({ data: [] });
+        const listSkillsSpy = vi.spyOn(mockFixture.getCodexAcpClient(), "listSkills");
 
         // @ts-expect-error - exercising private helper
         await codexAcpAgent.availableCommands.publish("session-id");
 
+        expect(listSkillsSpy).not.toHaveBeenCalled();
         await expect(mockFixture.getAcpConnectionDump([])).toMatchFileSnapshot("data/available-commands-build-in.json");
     });
 
-    it('should return available commands from skills list', async () => {
+    it('should not expose skills as available commands', async () => {
         const mockFixture = createCodexMockTestFixture();
         const codexAcpAgent = mockFixture.getCodexAcpAgent();
 
-        vi.spyOn(mockFixture.getCodexAcpClient(), "listSkills").mockResolvedValue({
-            data: [{
-                cwd: "/workspace",
-                skills: [{
-                    name: "build",
-                    description: "Build the project",
-                    shortDescription: "Build",
-                    path: "/workspace",
-                    scope: "user",
-                    enabled: true
-                }],
-                errors: []
-            }]
-        });
+        const listSkillsSpy = vi.spyOn(mockFixture.getCodexAcpClient(), "listSkills");
 
         // @ts-expect-error - exercising private helper
         await codexAcpAgent.availableCommands.publish("session-id");
 
+        expect(listSkillsSpy).not.toHaveBeenCalled();
         await expect(mockFixture.getAcpConnectionDump([])).toMatchFileSnapshot("data/available-commands-skills.json");
     });
 
@@ -951,6 +940,70 @@ describe('ACP server test', { timeout: 40_000 }, () => {
 
         await codexAcpAgent.prompt({ sessionId: "session-id", prompt: [{ type: "text", text: "/status" }] });
         await expect(mockFixture.getAcpConnectionDump([])).toMatchFileSnapshot("data/command-status.json");
+    });
+
+    it('handles goal slash command locally', async () => {
+        const { mockFixture, turnStartSpy } = setupPromptFixture();
+        const getThreadGoalSpy = vi.spyOn(mockFixture.getCodexAcpClient(), "getThreadGoal")
+            .mockResolvedValueOnce({ goal: null })
+            .mockResolvedValueOnce({ goal: createThreadGoal() })
+            .mockResolvedValueOnce({ goal: null })
+            .mockResolvedValueOnce({ goal: createThreadGoal({ status: "paused" }) });
+        const setThreadGoalSpy = vi.spyOn(mockFixture.getCodexAcpClient(), "setThreadGoal")
+            .mockResolvedValue({ goal: createThreadGoal({ objective: "Ship it" }) });
+        const clearThreadGoalSpy = vi.spyOn(mockFixture.getCodexAcpClient(), "clearThreadGoal")
+            .mockResolvedValue({ cleared: false });
+
+        await mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "/goal" }],
+        });
+        expect(mockFixture.getAcpConnectionEvents([]).at(-1)!.args[0].update.content.text)
+            .toBe("Usage: /goal <objective>\nNo goal is currently set.");
+
+        await mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "/goal" }],
+        });
+        expect(mockFixture.getAcpConnectionEvents([]).at(-1)!.args[0].update.content.text)
+            .toBe("Goal active: Ship goal support\ntokens used: 42 of 1000\ntime used: 12 seconds");
+
+        await mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "/goal Ship it" }],
+        });
+        expect(setThreadGoalSpy).toHaveBeenCalledWith({
+            threadId: "session-id",
+            objective: "Ship it",
+            status: "active",
+        });
+
+        await mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "/goal pause" }],
+        });
+        expect(mockFixture.getAcpConnectionEvents([]).at(-1)!.args[0].update.content.text)
+            .toBe("No goal is currently set. Use `/goal <objective>` to create one.");
+
+        await mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "/goal resume" }],
+        });
+        expect(setThreadGoalSpy).toHaveBeenCalledWith({
+            threadId: "session-id",
+            status: "active",
+        });
+
+        await mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "/goal clear" }],
+        });
+        expect(clearThreadGoalSpy).toHaveBeenCalledWith({ threadId: "session-id" });
+        expect(mockFixture.getAcpConnectionEvents([]).at(-1)!.args[0].update.content.text)
+            .toBe("No goal to clear. This thread does not currently have a goal.");
+
+        expect(getThreadGoalSpy).toHaveBeenCalledWith({ threadId: "session-id" });
+        expect(turnStartSpy).not.toHaveBeenCalled();
     });
 
     it('passes skill slash commands through to Codex', async () => {
@@ -1335,6 +1388,20 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         };
     }
 
+    function createThreadGoal(overrides?: Partial<ThreadGoal>): ThreadGoal {
+        return {
+            threadId: "session-id",
+            objective: "Ship goal support",
+            status: "active",
+            tokenBudget: 1000,
+            tokensUsed: 42,
+            timeUsedSeconds: 12,
+            createdAt: 1710000000,
+            updatedAt: 1710000012,
+            ...overrides,
+        };
+    }
+
     it ('should disable reasoning.summary if key authorization is used', async () => {
         const { mockFixture, turnStartSpy } = setupPromptFixture({ account: { type: "apiKey" } });
 
@@ -1600,6 +1667,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             sessionId,
             prompt: [{ type: "text", text: "test" }],
         });
+        mockFixture.clearAcpConnectionDump();
 
         mockFixture.sendServerNotification({
             method: "account/rateLimits/updated",
@@ -1663,6 +1731,36 @@ describe('ACP server test', { timeout: 40_000 }, () => {
                 planType: null,
                 rateLimitReachedType: null,
             }
+        });
+        expect(mockFixture.getAcpConnectionEvents([])).toContainEqual({
+            method: "notify",
+            args: [
+                ACP_EXT_SESSION_RATE_LIMITS_METHOD,
+                {
+                    planName: null,
+                    limitName: "Standard",
+                    limitId: "standard-limit",
+                    fiveHour: 30,
+                    sevenDay: null,
+                    fiveHourResetAt: null,
+                    sevenDayResetAt: null,
+                },
+            ],
+        });
+        expect(mockFixture.getAcpConnectionEvents([])).toContainEqual({
+            method: "notify",
+            args: [
+                ACP_EXT_SESSION_RATE_LIMITS_METHOD,
+                {
+                    planName: null,
+                    limitName: "Fast",
+                    limitId: "fast-limit",
+                    fiveHour: 50,
+                    sevenDay: null,
+                    fiveHourResetAt: null,
+                    sevenDayResetAt: null,
+                },
+            ],
         });
     });
 });

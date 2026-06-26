@@ -1,13 +1,13 @@
 {
-  "name": "@agentclientprotocol/codex-acp",
+  "name": "acp-extension-codex",
   "publishConfig": {
     "access": "public"
   },
   "version": "1.0.0",
-  "description": "",
+  "description": "An ACP-compatible coding agent powered by Codex",
   "main": "dist/index.js",
   "bin": {
-    "codex-acp": "dist/index.js"
+    "acp-extension-codex": "dist/index.js"
   },
   "files": [
     "dist/index.js",
@@ -18,20 +18,18 @@
   "scripts": {
     "prepublishOnly": "npm run build",
     "build": "node build.mjs",
-    "bundle:all": "npm run bundle:linux-x64 && npm run bundle:linux-arm64 && npm run bundle:darwin-x64 && npm run bundle:darwin-arm64 && npm run bundle:win-x64 && npm run bundle:win-arm64",
-    "bundle:linux-x64": "bun build src/index.ts --minify --sourcemap --compile --target=bun-linux-x64-baseline --outfile dist/bin/codex-acp-x64-linux",
-    "bundle:linux-arm64": "bun build src/index.ts --minify --sourcemap --compile --target=bun-linux-arm64 --outfile dist/bin/codex-acp-arm64-linux",
-    "bundle:darwin-x64": "bun build src/index.ts --minify --sourcemap --compile --target=bun-darwin-x64-baseline --outfile dist/bin/codex-acp-x64-darwin",
-    "bundle:darwin-arm64": "bun build src/index.ts --minify --sourcemap --compile --target=bun-darwin-arm64 --outfile dist/bin/codex-acp-arm64-darwin",
-    "bundle:win-x64": "bun build src/index.ts --minify --sourcemap --compile --target=bun-windows-x64-baseline --outfile dist/bin/codex-acp-x64-windows.exe",
-    "bundle:win-arm64": "bun build src/index.ts --minify --sourcemap --compile --target=bun-windows-arm64 --outfile dist/bin/codex-acp-arm64-windows.exe",
-    "package:all": "npm run package:linux-x64 && npm run package:linux-arm64 && npm run package:darwin-x64 && npm run package:darwin-arm64 && npm run package:win-x64 && npm run package:win-arm64",
-    "package:linux-x64": "cd dist/bin && zip codex-acp-x64-linux.zip codex-acp-x64-linux",
-    "package:linux-arm64": "cd dist/bin && zip codex-acp-arm64-linux.zip codex-acp-arm64-linux",
-    "package:darwin-x64": "cd dist/bin && zip codex-acp-x64-darwin.zip codex-acp-x64-darwin",
-    "package:darwin-arm64": "cd dist/bin && zip codex-acp-arm64-darwin.zip codex-acp-arm64-darwin",
-    "package:win-x64": "cd dist/bin && zip codex-acp-x64-windows.zip codex-acp-x64-windows.exe",
-    "package:win-arm64": "cd dist/bin && zip codex-acp-arm64-windows.zip codex-acp-arm64-windows.exe",
+    "bundle:all": "npm run bundle:linux-x64 && npm run bundle:linux-arm64 && npm run bundle:darwin-x64 && npm run bundle:darwin-arm64 && npm run bundle:win-x64",
+    "bundle:linux-x64": "bun build src/index.ts --minify --sourcemap --compile --target=bun-linux-x64-baseline --outfile dist/bin/acp-extension-codex-x64-linux",
+    "bundle:linux-arm64": "bun build src/index.ts --minify --sourcemap --compile --target=bun-linux-arm64 --outfile dist/bin/acp-extension-codex-arm64-linux",
+    "bundle:darwin-x64": "bun build src/index.ts --minify --sourcemap --compile --target=bun-darwin-x64-baseline --outfile dist/bin/acp-extension-codex-x64-darwin",
+    "bundle:darwin-arm64": "bun build src/index.ts --minify --sourcemap --compile --target=bun-darwin-arm64 --outfile dist/bin/acp-extension-codex-arm64-darwin",
+    "bundle:win-x64": "bun build src/index.ts --minify --sourcemap --compile --target=bun-windows-x64-baseline --outfile dist/bin/acp-extension-codex-x64-windows.exe",
+    "package:all": "npm run package:linux-x64 && npm run package:linux-arm64 && npm run package:darwin-x64 && npm run package:darwin-arm64 && npm run package:win-x64",
+    "package:linux-x64": "cd dist/bin && zip acp-extension-codex-x64-linux.zip acp-extension-codex-x64-linux",
+    "package:linux-arm64": "cd dist/bin && zip acp-extension-codex-arm64-linux.zip acp-extension-codex-arm64-linux",
+    "package:darwin-x64": "cd dist/bin && zip acp-extension-codex-x64-darwin.zip acp-extension-codex-x64-darwin",
+    "package:darwin-arm64": "cd dist/bin && zip acp-extension-codex-arm64-darwin.zip acp-extension-codex-arm64-darwin",
+    "package:win-x64": "cd dist/bin && zip acp-extension-codex-x64-windows.zip acp-extension-codex-x64-windows.exe",
     "start": "node --import tsx src/index.ts",
     "generate-types": "./node_modules/.bin/codex app-server generate-ts --out src/app-server",
     "test": "vitest run",
@@ -40,16 +38,23 @@
     "typecheck": "tsc --noEmit",
     "codex-test": "tsx .claude/skills/run-codex/scripts/run-codex-test.ts"
   },
-  "homepage": "https://github.com/agentclientprotocol/codex-acp#readme",
+  "homepage": "https://github.com/Leeeon233/acp-extension-codex#readme",
   "bugs": {
-    "url": "https://github.com/agentclientprotocol/codex-acp/issues"
+    "url": "https://github.com/Leeeon233/acp-extension-codex/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/agentclientprotocol/codex-acp.git"
+    "url": "git+https://github.com/Leeeon233/acp-extension-codex.git"
   },
-  "keywords": [],
-  "author": "Agent Client Protocol",
+  "keywords": [
+    "codex",
+    "acp",
+    "agent",
+    "coding",
+    "ai",
+    "assistant"
+  ],
+  "author": "lody <agent@lody.ai>",
   "license": "Apache-2.0",
   "type": "module",
   "devDependencies": {
