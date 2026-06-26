@@ -29,6 +29,8 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      - run: npm run build
+      - run: npm pack --dry-run
       - name: Run e2e tests
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

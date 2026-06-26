@@ -2,7 +2,7 @@ import type * as acp from "@agentclientprotocol/sdk";
 import type {AvailableCommand} from "@agentclientprotocol/sdk";
 import {ACPSessionConnection, type AcpClientConnection} from "./ACPSessionConnection";
 import type {CodexAcpClient} from "./CodexAcpClient";
-import type {RateLimitSnapshot, ReviewTarget, SkillsListEntry, TurnCompletedNotification} from "./app-server/v2";
+import type {RateLimitSnapshot, ReviewTarget, ThreadGoal, TurnCompletedNotification} from "./app-server/v2";
 import type {SessionState} from "./CodexAcpServer";
 import type {RateLimitsMap} from "./RateLimitsMap";
 import type {TokenCount} from "./TokenCount";
@@ -34,8 +34,7 @@ export class CodexCommands {
 
     async publish(sessionId: string): Promise<void> {
         try {
-            const skillsResponse = await this.runWithProcessCheck(() => this.codexAcpClient.listSkills());
-            const availableCommands = this.buildAvailableCommands(skillsResponse?.data ?? []);
+            const availableCommands = this.buildAvailableCommands();
             if (availableCommands.length === 0) {
                 return;
             }
@@ -50,25 +49,13 @@ export class CodexCommands {
         }
     }
 
-    private buildAvailableCommands(skillsEntries: SkillsListEntry[]): AvailableCommand[] {
+    private buildAvailableCommands(): AvailableCommand[] {
         const commands = new Map<string, AvailableCommand>();
 
         for (const builtin of this.getBuiltinCommands()) {
             commands.set(builtin.name, builtin);
         }
 
-        for (const entry of skillsEntries) {
-            for (const skill of entry.skills) {
-                const name = `$${skill.name}`;
-                if (commands.has(name)) continue;
-                const description = skill.shortDescription ?? skill.description ?? skill.name;
-                commands.set(name, {
-                    name,
-                    description,
-                    input: null,
-                });
-            }
-        }
         return Array.from(commands.values());
     }
 
@@ -91,6 +78,11 @@ export class CodexCommands {
                 name: "status",
                 description: "Display session configuration and token usage.",
                 input: null
+            },
+            {
+                name: "goal",
+                description: "Set or view the goal for a long-running task.",
+                input: { hint: "objective | pause | resume | clear" }
             },
             {
                 name: "review",
@@ -180,21 +172,17 @@ export class CodexCommands {
                 return { handled: true, turnCompleted };
             }
             case "status": {
-                const session = new ACPSessionConnection(this.connection, sessionId);
                 const message = this.buildStatusMessage(sessionState);
-                await session.update({
-                    sessionUpdate: "agent_message_chunk",
-                    content: { type: "text", text: message }
-                });
+                await this.sendCommandMessage(message, sessionId);
+                return { handled: true };
+            }
+            case "goal": {
+                await this.handleGoalCommand(command.rest, sessionId);
                 return { handled: true };
             }
             case "logout": {
                 await this.runWithProcessCheck(() => this.codexAcpClient.logout());
-                const session = new ACPSessionConnection(this.connection, sessionId);
-                await session.update({
-                    sessionUpdate: "agent_message_chunk",
-                    content: { type: "text", text: "Logged out from Codex account." }
-                });
+                await this.sendCommandMessage("Logged out from Codex account.", sessionId);
                 return { handled: true };
             }
             case "skills": {
@@ -207,11 +195,7 @@ export class CodexCommands {
                 const text = lines.length > 0
                     ? ["Available skills:", ...lines].join("\n")
                     : "No skills configured.";
-                const session = new ACPSessionConnection(this.connection, sessionId);
-                await session.update({
-                    sessionUpdate: "agent_message_chunk",
-                    content: { type: "text", text }
-                });
+                await this.sendCommandMessage(text, sessionId);
                 return { handled: true };
             }
             case "mcp": {
@@ -228,11 +212,7 @@ export class CodexCommands {
                 const text = lines.length > 0
                     ? ["Configured MCP servers:", ...lines].join("\n")
                     : "No MCP servers configured.";
-                const session = new ACPSessionConnection(this.connection, sessionId);
-                await session.update({
-                    sessionUpdate: "agent_message_chunk",
-                    content: { type: "text", text }
-                });
+                await this.sendCommandMessage(text, sessionId);
                 return { handled: true };
             }
             default:
@@ -262,14 +242,62 @@ export class CodexCommands {
     }
 
     private async sendCommandUsageMessage(name: string, inputHint: string, sessionId: string): Promise<void> {
+        await this.sendCommandMessage(`Command "/${name}" requires ${inputHint}.`, sessionId);
+    }
+
+    private async sendCommandMessage(text: string, sessionId: string): Promise<void> {
         const session = new ACPSessionConnection(this.connection, sessionId);
         await session.update({
             sessionUpdate: "agent_message_chunk",
-            content: {
-                type: "text",
-                text: `Command "/${name}" requires ${inputHint}.`
-            }
+            content: { type: "text", text }
         });
+    }
+
+    private async handleGoalCommand(args: string, sessionId: string): Promise<void> {
+        const trimmed = args.trim();
+        switch (trimmed.toLowerCase()) {
+            case "": {
+                const response = await this.runWithProcessCheck(() => this.codexAcpClient.getThreadGoal({ threadId: sessionId }));
+                const text = response.goal
+                    ? this.formatThreadGoalSummary(response.goal)
+                    : "Usage: /goal <objective>\nNo goal is currently set.";
+                await this.sendCommandMessage(text, sessionId);
+                return;
+            }
+            case "clear": {
+                const response = await this.runWithProcessCheck(() => this.codexAcpClient.clearThreadGoal({ threadId: sessionId }));
+                if (!response.cleared) {
+                    await this.sendCommandMessage("No goal to clear. This thread does not currently have a goal.", sessionId);
+                }
+                return;
+            }
+            case "pause":
+                await this.handleGoalStatusCommand(sessionId, "paused");
+                return;
+            case "resume":
+                await this.handleGoalStatusCommand(sessionId, "active");
+                return;
+            default:
+                await this.runWithProcessCheck(() => this.codexAcpClient.setThreadGoal({
+                    threadId: sessionId,
+                    objective: trimmed,
+                    status: "active",
+                }));
+                return;
+        }
+    }
+
+    private async handleGoalStatusCommand(sessionId: string, status: "active" | "paused"): Promise<void> {
+        const response = await this.runWithProcessCheck(() => this.codexAcpClient.getThreadGoal({ threadId: sessionId }));
+        if (!response.goal) {
+            await this.sendCommandMessage("No goal is currently set. Use `/goal <objective>` to create one.", sessionId);
+            return;
+        }
+
+        await this.runWithProcessCheck(() => this.codexAcpClient.setThreadGoal({
+            threadId: sessionId,
+            status,
+        }));
     }
 
     private async sendUnknownCommandMessage(name: string, sessionId: string): Promise<void> {
@@ -281,11 +309,7 @@ export class CodexCommands {
         if (lines.length > 0) {
             text.push(...lines);
         }
-        const session = new ACPSessionConnection(this.connection, sessionId);
-        await session.update({
-            sessionUpdate: "agent_message_chunk",
-            content: { type: "text", text: text.join("\n") }
-        });
+        await this.sendCommandMessage(text.join("\n"), sessionId);
     }
 
     private buildStatusMessage(sessionState: SessionState): string {
@@ -430,6 +454,28 @@ export class CodexCommands {
         return ` (resets ${timeStr} on ${dateStr})`;
     }
 
+    private formatThreadGoalSummary(goal: ThreadGoal): string {
+        const usage = goal.tokenBudget === null
+            ? `tokens used: ${goal.tokensUsed}`
+            : `tokens used: ${goal.tokensUsed} of ${goal.tokenBudget}`;
+        return [
+            `Goal ${this.formatThreadGoalStatus(goal.status)}: ${goal.objective}`,
+            usage,
+            `time used: ${goal.timeUsedSeconds} seconds`,
+        ].join("\n");
+    }
+
+    private formatThreadGoalStatus(status: ThreadGoal["status"]): string {
+        switch (status) {
+            case "usageLimited":
+                return "usage-limited";
+            case "budgetLimited":
+                return "budget-limited";
+            default:
+                return status;
+        }
+    }
+
     private formatTokenCount(count: number): string {
         if (count >= 1000000) {
             return `${(count / 1000000).toFixed(1)}M`;
@@ -440,5 +486,3 @@ export class CodexCommands {
         return count.toString();
     }
 }
-
-type ParsedCommand = { name: string; };

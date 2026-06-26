@@ -228,8 +228,3 @@
   },
   "requiresOpenaiAuth": true
 }
-{
-  "eventType": "request",
-  "method": "skills/list",
-  "params": {}
-}

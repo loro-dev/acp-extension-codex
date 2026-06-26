@@ -12,6 +12,7 @@ import open from "open";
 import type {Disposable} from "vscode-jsonrpc";
 import type {
     ClientInfo,
+    CollaborationMode,
     ReasoningEffort,
     ServiceTier,
     ServerNotification
@@ -32,9 +33,16 @@ import type {
     SkillsListParams,
     SkillsListResponse,
     SandboxPolicy,
+    ThreadGoalClearParams,
+    ThreadGoalClearResponse,
+    ThreadGoalGetParams,
+    ThreadGoalGetResponse,
+    ThreadGoalSetParams,
+    ThreadGoalSetResponse,
     Thread,
     ThreadSourceKind,
     TurnCompletedNotification,
+    TurnStartParams,
     UserInput,
 } from "./app-server/v2";
 import packageJson from "../package.json";
@@ -68,7 +76,10 @@ export class CodexAcpClient {
 
     async initialize(request: acp.InitializeRequest): Promise<void> {
         await this.codexClient.initialize({
-            capabilities: null,
+            capabilities: {
+                experimentalApi: true,
+                requestAttestation: false,
+            },
             clientInfo: {
                 name: request.clientInfo?.name ?? this.defaultClientInfo.name,
                 version: request.clientInfo?.version ?? this.defaultClientInfo.version,
@@ -202,6 +213,18 @@ export class CodexAcpClient {
 
     async getAccount(): Promise<GetAccountResponse> {
         return this.codexClient.accountRead({refreshToken: false});
+    }
+
+    async getThreadGoal(params: ThreadGoalGetParams): Promise<ThreadGoalGetResponse> {
+        return await this.codexClient.threadGoalGet(params);
+    }
+
+    async setThreadGoal(params: ThreadGoalSetParams): Promise<ThreadGoalSetResponse> {
+        return await this.codexClient.threadGoalSet(params);
+    }
+
+    async clearThreadGoal(params: ThreadGoalClearParams): Promise<ThreadGoalClearResponse> {
+        return await this.codexClient.threadGoalClear(params);
     }
 
     async resumeSession(request: acp.ResumeSessionRequest, onSubscribed?: () => void): Promise<SessionMetadata> {
@@ -491,6 +514,7 @@ export class CodexAcpClient {
         agentMode: AgentMode,
         modelId: ModelId,
         serviceTier: ServiceTier | null,
+        collaborationMode: CollaborationMode | null,
         disableSummary: boolean,
         cwd: string,
         additionalDirectories: string[],
@@ -503,7 +527,7 @@ export class CodexAcpClient {
         if (shouldCancel?.()) {
             return null;
         }
-        return await this.codexClient.runTurn({
+        const params: TurnStartParams & { collaborationMode?: CollaborationMode } = {
             threadId: request.sessionId,
             input: input,
             approvalPolicy: agentMode.approvalPolicy,
@@ -512,7 +536,11 @@ export class CodexAcpClient {
             effort: effort,
             model: modelId.model,
             serviceTier: serviceTier,
-        }, onTurnStarted);
+        };
+        if (collaborationMode !== null) {
+            params.collaborationMode = collaborationMode;
+        }
+        return await this.codexClient.runTurn(params, onTurnStarted);
     }
 
     resolveTurnInterrupted(params: { threadId: string, turnId: string }): void {

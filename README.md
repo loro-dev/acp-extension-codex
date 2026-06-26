@@ -1,10 +1,10 @@
 # ACP adapter for Codex CLI
 
-[![npm version](https://img.shields.io/npm/v/%40agentclientprotocol%2Fcodex-acp)](https://www.npmjs.com/package/@agentclientprotocol/codex-acp)
+[![npm version](https://img.shields.io/npm/v/acp-extension-codex)](https://www.npmjs.com/package/acp-extension-codex)
 
 Use [OpenAI Codex](https://github.com/openai/codex) from [Agent Client Protocol](https://agentclientprotocol.com/) clients.
 
-`codex-acp` is a stdio ACP agent server. It starts the Codex App Server, translates ACP requests into Codex operations, and maps Codex events back into the client.
+`acp-extension-codex` is a stdio ACP agent server. It starts the Codex App Server, translates ACP requests into Codex operations, and maps Codex events back into the client.
 
 ## Features
 
@@ -20,20 +20,20 @@ Use [OpenAI Codex](https://github.com/openai/codex) from [Agent Client Protocol]
 Run the published package directly:
 
 ```bash
-npx -y @agentclientprotocol/codex-acp
+npx -y acp-extension-codex
 ```
 
 Or install it globally:
 
 ```bash
-npm install -g @agentclientprotocol/codex-acp
-codex-acp --version
+npm install -g acp-extension-codex
+acp-extension-codex --version
 ```
 
 The npm package includes a compatible `@openai/codex` dependency. Set `CODEX_PATH` only when you want the adapter to run a different Codex binary:
 
 ```bash
-CODEX_PATH=/path/to/codex npx -y @agentclientprotocol/codex-acp
+CODEX_PATH=/path/to/codex npx -y acp-extension-codex
 ```
 
 ## Authentication

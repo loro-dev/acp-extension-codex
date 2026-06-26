@@ -30,6 +30,12 @@ import type {
     ThreadArchiveResponse,
     ThreadCompactStartParams,
     ThreadCompactStartResponse,
+    ThreadGoalClearParams,
+    ThreadGoalClearResponse,
+    ThreadGoalGetParams,
+    ThreadGoalGetResponse,
+    ThreadGoalSetParams,
+    ThreadGoalSetResponse,
     ThreadLoadedListParams,
     ThreadLoadedListResponse,
     ThreadListParams,
@@ -312,6 +318,18 @@ export class CodexAppServerClient {
 
     async threadCompactStart(params: ThreadCompactStartParams): Promise<ThreadCompactStartResponse> {
         return await this.sendRequest({ method: "thread/compact/start", params: params });
+    }
+
+    async threadGoalGet(params: ThreadGoalGetParams): Promise<ThreadGoalGetResponse> {
+        return await this.sendRequest({ method: "thread/goal/get", params });
+    }
+
+    async threadGoalSet(params: ThreadGoalSetParams): Promise<ThreadGoalSetResponse> {
+        return await this.sendRequest({ method: "thread/goal/set", params });
+    }
+
+    async threadGoalClear(params: ThreadGoalClearParams): Promise<ThreadGoalClearResponse> {
+        return await this.sendRequest({ method: "thread/goal/clear", params });
     }
 
     async listMcpServerStatus(params: ListMcpServerStatusParams): Promise<ListMcpServerStatusResponse> {
