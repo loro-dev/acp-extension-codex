@@ -92,7 +92,8 @@ jobs:
             -c sandbox_workspace_write.writable_roots=["${{ github.workspace }}/.git"]
           prompt: >
             Finalize the update using codex-update-compat skill.
-            Commit the changes, the message should mention that types or/and tests after the update were fixed.
+            Commit only tracked file changes, and never create an empty commit.
+            If there are changes, the commit message should mention that types or/and tests after the update were fixed.
             When creating the final message do not mention:
             * Validation run details.
             * Commits.
