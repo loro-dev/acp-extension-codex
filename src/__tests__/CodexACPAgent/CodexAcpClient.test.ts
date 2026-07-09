@@ -1,7 +1,7 @@
 // noinspection ES6RedundantAwait
 
-import {beforeEach, describe, expect, it, vi} from 'vitest';
-import type {CodexAuthRequest} from "../../CodexAuthMethod";
+import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
+import {CODEX_API_KEY_ENV_VAR, OPENAI_API_KEY_ENV_VAR, type CodexAuthRequest} from "../../CodexAuthMethod";
 import type * as acp from "@agentclientprotocol/sdk";
 import {
     createCodexMockTestFixture,
@@ -24,6 +24,10 @@ describe('ACP server test', { timeout: 40_000 }, () => {
     beforeEach(() => {
         fixture = createTestFixture();
         vi.clearAllMocks();
+    });
+
+    afterEach(() => {
+        vi.unstubAllEnvs();
     });
 
     const ignoredFields = ["thread", "cwd", "id", "createdAt", "path", "threadId", "userAgent", "sandbox",  "conversationId", "origins", "supportedReasoningEfforts", "reasoningEffort", "model", "readOnlyAccess", "approvalsReviewer"];
@@ -57,10 +61,10 @@ describe('ACP server test', { timeout: 40_000 }, () => {
 
         keyFixture.clearCodexConnectionDump();
 
-        const authRequest: CodexAuthRequest = { methodId: "api-key", _meta: { "api-key": { apiKey: "TOKEN" }}}
+        const authRequest: CodexAuthRequest = { methodId: "api-key", _meta: { "api-key": { apiKey: "TOKEN" }}};
         await codexAcpAgent.authenticate(authRequest);
         const newSessionResponse = await codexAcpAgent.newSession({cwd: "", mcpServers: []});
-        expect(newSessionResponse.sessionId).toBeDefined()
+        expect(newSessionResponse.sessionId).toBeDefined();
 
         const transportEvents = keyFixture.getCodexConnectionEvents([...ignoredFields, "upgrade"]);
         const transportMethods = transportEvents.flatMap(event => "method" in event ? [event.method] : []);
@@ -87,6 +91,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             "model/list",
             "thread/started",
             "account/read",
+            "skills/list",
         ]);
         expect(loginRequest).toEqual({
             eventType: "request",
@@ -112,6 +117,90 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         await keyFixture.getCodexAcpAgent().logout({});
         const logoutResponse = await keyFixture.getCodexAcpAgent().extMethod("authentication/status", {});
         expect(logoutResponse).toEqual({type: "unauthenticated"});
+    });
+
+    it('should authenticate with CODEX_API_KEY from the environment', async () => {
+        const envFixture = createTestFixture();
+        const codexAcpAgent = envFixture.getCodexAcpAgent();
+        vi.stubEnv(CODEX_API_KEY_ENV_VAR, "CODEX_ENV_TOKEN");
+        vi.stubEnv(OPENAI_API_KEY_ENV_VAR, "OPENAI_ENV_TOKEN");
+
+        await codexAcpAgent.initialize({protocolVersion: 1});
+        await envFixture.getCodexAcpClient().logout();
+        envFixture.clearCodexConnectionDump();
+
+        await codexAcpAgent.authenticate({methodId: "api-key"});
+
+        const transportEvents = envFixture.getCodexConnectionEvents([]);
+        const loginRequest = transportEvents.find(event =>
+            event.eventType === "request" &&
+            "method" in event &&
+            event.method === "account/login/start"
+        );
+        expect(loginRequest).toEqual({
+            eventType: "request",
+            method: "account/login/start",
+            params: {
+                type: "apiKey",
+                apiKey: "CODEX_ENV_TOKEN",
+            }
+        });
+        await expect(codexAcpAgent.extMethod("authentication/status", {})).resolves.toEqual({type: "api-key"});
+    });
+
+    it('should fall back to OPENAI_API_KEY from the environment', async () => {
+        const envFixture = createTestFixture();
+        const codexAcpAgent = envFixture.getCodexAcpAgent();
+        vi.stubEnv(CODEX_API_KEY_ENV_VAR, "");
+        vi.stubEnv(OPENAI_API_KEY_ENV_VAR, "OPENAI_ENV_TOKEN");
+
+        await codexAcpAgent.initialize({protocolVersion: 1});
+        await envFixture.getCodexAcpClient().logout();
+        envFixture.clearCodexConnectionDump();
+
+        await codexAcpAgent.authenticate({methodId: "api-key"});
+
+        const transportEvents = envFixture.getCodexConnectionEvents([]);
+        const loginRequest = transportEvents.find(event =>
+            event.eventType === "request" &&
+            "method" in event &&
+            event.method === "account/login/start"
+        );
+        expect(loginRequest).toEqual({
+            eventType: "request",
+            method: "account/login/start",
+            params: {
+                type: "apiKey",
+                apiKey: "OPENAI_ENV_TOKEN",
+            }
+        });
+        await expect(codexAcpAgent.extMethod("authentication/status", {})).resolves.toEqual({type: "api-key"});
+    });
+
+    it('should report a clear error when the selected API key env var is missing', async () => {
+        const envFixture = createTestFixture();
+        const codexAcpAgent = envFixture.getCodexAcpAgent();
+        vi.stubEnv(CODEX_API_KEY_ENV_VAR, "");
+        vi.stubEnv(OPENAI_API_KEY_ENV_VAR, "");
+
+        await expect(codexAcpAgent.authenticate({methodId: "api-key"}))
+            .rejects.toThrow(`${CODEX_API_KEY_ENV_VAR} or ${OPENAI_API_KEY_ENV_VAR} is not set`);
+    });
+
+    it('should not start ChatGPT login when already authenticated', async () => {
+        const chatGptFixture = createCodexMockTestFixture();
+        const codexAppServerClient = chatGptFixture.getCodexAppServerClient();
+        const accountReadSpy = vi.spyOn(codexAppServerClient, "accountRead").mockResolvedValue({
+            account: { type: "chatgpt", email: "test@example.com", planType: "pro" },
+            requiresOpenaiAuth: false,
+        });
+        const accountLoginSpy = vi.spyOn(codexAppServerClient, "accountLogin");
+
+        await expect(chatGptFixture.getCodexAcpAgent().authenticate({methodId: "chat-gpt"}))
+            .resolves.toEqual({});
+
+        expect(accountReadSpy).toHaveBeenCalledWith({refreshToken: true});
+        expect(accountLoginSpy).not.toHaveBeenCalled();
     });
 
     it('should authenticate with a gateway', async () => {
@@ -149,8 +238,8 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         expect(authenticatedResponse).toEqual({type: "gateway", name: "custom-gateway"});
 
         const newSessionResponse = await codexAcpAgent.newSession({cwd: "", mcpServers: []});
-        expect(newSessionResponse.sessionId).toBeDefined()
-    })
+        expect(newSessionResponse.sessionId).toBeDefined();
+    });
 
     it('should show account in /status for api key auth and hide it for gateway auth', async () => {
         const authFixture = createTestFixture();
@@ -362,6 +451,104 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         expect(threadReadSpy).toHaveBeenCalledWith({
             threadId: "thread-id",
             includeTurns: true,
+        });
+    });
+
+    it('uses configured model provider when resuming sessions without an explicit provider', async () => {
+        const mockFixture = createCodexMockTestFixture();
+        const codexAcpClient = mockFixture.getCodexAcpClient();
+        const codexAppServerClient = mockFixture.getCodexAppServerClient();
+
+        vi.spyOn(codexAppServerClient, "skillsExtraRootsSet").mockResolvedValue(undefined);
+        vi.spyOn(codexAppServerClient, "listSkills").mockResolvedValue({data: []});
+        vi.spyOn(codexAppServerClient, "configRead").mockResolvedValue({
+            config: {
+                model_provider: "azure",
+            },
+        } as any);
+        const threadResumeSpy = vi.spyOn(codexAppServerClient, "threadResume").mockResolvedValue({
+            thread: {id: "thread-id"} as any,
+            model: "gpt-5",
+            reasoningEffort: "medium",
+            serviceTier: null,
+        } as any);
+        vi.spyOn(codexAppServerClient, "threadRead").mockResolvedValue({
+            thread: {id: "thread-id"} as any,
+        });
+        vi.spyOn(codexAppServerClient, "listModels").mockResolvedValue({
+            data: [createTestModel({id: "gpt-5"})],
+            nextCursor: null,
+        });
+
+        await codexAcpClient.resumeSession({
+            sessionId: "resume-id",
+            cwd: "/workspace",
+        });
+        await codexAcpClient.loadSession({
+            sessionId: "load-id",
+            cwd: "/workspace",
+            mcpServers: [],
+        });
+
+        expect(threadResumeSpy.mock.calls[0]![0].modelProvider).toBe("azure");
+        expect(threadResumeSpy.mock.calls[1]![0].modelProvider).toBe("azure");
+    });
+
+    it('tracks configured model provider auth state for resumed and loaded sessions', async () => {
+        const mockFixture = createCodexMockTestFixture();
+        const codexAcpAgent = mockFixture.getCodexAcpAgent();
+        const codexAcpClient = mockFixture.getCodexAcpClient();
+        const codexAppServerClient = mockFixture.getCodexAppServerClient();
+
+        vi.spyOn(codexAcpClient, "authRequired").mockResolvedValue(false);
+        const getAccountSpy = vi.spyOn(codexAcpClient, "getAccount").mockResolvedValue({
+            account: null,
+            requiresOpenaiAuth: true,
+        });
+        vi.spyOn(codexAppServerClient, "skillsExtraRootsSet").mockResolvedValue(undefined);
+        vi.spyOn(codexAppServerClient, "listSkills").mockResolvedValue({data: []});
+        vi.spyOn(codexAppServerClient, "configRead").mockResolvedValue({
+            config: {
+                model_provider: "azure",
+            },
+        } as any);
+        const threadResumeSpy = vi.spyOn(codexAppServerClient, "threadResume").mockResolvedValue({
+            thread: {id: "thread-id"} as any,
+            model: "gpt-5",
+            modelProvider: "azure",
+            reasoningEffort: "medium",
+            serviceTier: null,
+        } as any);
+        vi.spyOn(codexAppServerClient, "threadRead").mockResolvedValue({
+            thread: {id: "thread-id", turns: []} as any,
+        });
+        vi.spyOn(codexAppServerClient, "listModels").mockResolvedValue({
+            data: [createTestModel({id: "gpt-5"})],
+            nextCursor: null,
+        });
+
+        await codexAcpAgent.resumeSession({
+            sessionId: "resume-id",
+            cwd: "/workspace",
+        });
+        await codexAcpAgent.loadSession({
+            sessionId: "load-id",
+            cwd: "/workspace",
+            mcpServers: [],
+        });
+
+        expect(threadResumeSpy.mock.calls[0]![0].modelProvider).toBe("azure");
+        expect(threadResumeSpy.mock.calls[1]![0].modelProvider).toBe("azure");
+        expect(getAccountSpy).not.toHaveBeenCalled();
+        expect(codexAcpAgent.getSessionState("resume-id")).toMatchObject({
+            account: null,
+            authConfigured: true,
+            authProvider: "azure",
+        });
+        expect(codexAcpAgent.getSessionState("load-id")).toMatchObject({
+            account: null,
+            authConfigured: true,
+            authProvider: "azure",
         });
     });
 
@@ -621,7 +808,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         return onServerNotification;
     }
 
-    function createTurn(id: string, status: "inProgress" | "completed") {
+    function createTurn(id: string, status: "inProgress" | "completed" | "interrupted") {
         return {
             id,
             items: [],
@@ -646,6 +833,14 @@ describe('ACP server test', { timeout: 40_000 }, () => {
 
     async function flushAsyncWork(): Promise<void> {
         await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    function deferred<T>(): {promise: Promise<T>, resolve: (value: T) => void} {
+        let resolve: (value: T) => void = () => {};
+        const promise = new Promise<T>((innerResolve) => {
+            resolve = innerResolve;
+        });
+        return {promise, resolve};
     }
 
     it('should map events from dump', async () => {
@@ -852,6 +1047,150 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         })).resolves.toMatchObject({stopReason: "end_turn"});
     });
 
+    it('cancels an active prompt when the ACP prompt request is cancelled', async () => {
+        const { mockFixture, sessionState } = setupPromptFixture();
+        const turnCompleted = deferred<TurnCompletedNotification>();
+        vi.spyOn(mockFixture.getCodexAppServerClient(), "awaitTurnCompleted")
+            .mockReturnValue(turnCompleted.promise);
+        const turnInterruptSpy = vi.spyOn(mockFixture.getCodexAcpClient(), "turnInterrupt")
+            .mockImplementation(async ({threadId, turnId}) => {
+                turnCompleted.resolve({
+                    threadId,
+                    turn: createTurn(turnId, "interrupted"),
+                });
+            });
+        const controller = new AbortController();
+
+        const promptPromise = mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "long running prompt" }],
+        }, controller.signal);
+
+        await vi.waitFor(() => {
+            expect(sessionState.currentTurnId).toBe("turn-id");
+        });
+
+        controller.abort();
+
+        await vi.waitFor(() => {
+            expect(turnInterruptSpy).toHaveBeenCalledWith({
+                threadId: "session-id",
+                turnId: "turn-id",
+            });
+        });
+        await expect(promptPromise).resolves.toMatchObject({stopReason: "cancelled"});
+    });
+
+    it('returns success when a cancelled ACP prompt request completes before interruption wins', async () => {
+        const { mockFixture, sessionState } = setupPromptFixture();
+        const turnCompleted = deferred<TurnCompletedNotification>();
+        vi.spyOn(mockFixture.getCodexAppServerClient(), "awaitTurnCompleted")
+            .mockReturnValue(turnCompleted.promise);
+        const turnInterrupt = deferred<void>();
+        const turnInterruptSpy = vi.spyOn(mockFixture.getCodexAcpClient(), "turnInterrupt")
+            .mockReturnValue(turnInterrupt.promise);
+        const controller = new AbortController();
+
+        const promptPromise = mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "long running prompt" }],
+        }, controller.signal);
+
+        await vi.waitFor(() => {
+            expect(sessionState.currentTurnId).toBe("turn-id");
+        });
+
+        controller.abort();
+        await vi.waitFor(() => {
+            expect(turnInterruptSpy).toHaveBeenCalledWith({
+                threadId: "session-id",
+                turnId: "turn-id",
+            });
+        });
+
+        mockFixture.sendServerNotification({
+            method: "item/agentMessage/delta",
+            params: {
+                threadId: "session-id",
+                turnId: "turn-id",
+                itemId: "tail-item",
+                delta: "tail output",
+            },
+        });
+        turnCompleted.resolve({
+            threadId: "session-id",
+            turn: createTurn("turn-id", "completed"),
+        });
+        await expect(promptPromise).resolves.toMatchObject({stopReason: "end_turn"});
+        expect(mockFixture.getAcpConnectionDump([])).toContain("tail output");
+        turnInterrupt.resolve(undefined);
+    });
+
+    it('interrupts a late-started turn after the ACP prompt request is cancelled', async () => {
+        const { mockFixture } = setupPromptFixture();
+        const turnStart = deferred<{turn: ReturnType<typeof createTurn>}>();
+        const turnStartCalled = deferred<void>();
+        vi.spyOn(mockFixture.getCodexAppServerClient(), "turnStart")
+            .mockImplementation(async () => {
+                turnStartCalled.resolve();
+                return await turnStart.promise;
+            });
+        const turnCompleted = deferred<TurnCompletedNotification>();
+        vi.spyOn(mockFixture.getCodexAppServerClient(), "awaitTurnCompleted")
+            .mockReturnValue(turnCompleted.promise);
+        const turnInterruptSpy = vi.spyOn(mockFixture.getCodexAcpClient(), "turnInterrupt")
+            .mockImplementation(async ({threadId, turnId}) => {
+                turnCompleted.resolve({
+                    threadId,
+                    turn: createTurn(turnId, "interrupted"),
+                });
+            });
+        const controller = new AbortController();
+
+        const promptPromise = mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "long running prompt" }],
+        }, controller.signal);
+
+        await turnStartCalled.promise;
+        controller.abort();
+
+        await expect(promptPromise).resolves.toMatchObject({stopReason: "cancelled"});
+        expect(turnInterruptSpy).not.toHaveBeenCalled();
+
+        turnStart.resolve({turn: createTurn("late-turn-id", "inProgress")});
+        await vi.waitFor(() => {
+            expect(turnInterruptSpy).toHaveBeenCalledWith({
+                threadId: "session-id",
+                turnId: "late-turn-id",
+            });
+        });
+    });
+
+    it('returns cancelled when the ACP prompt request is cancelled during startup work', async () => {
+        const { mockFixture, turnStartSpy } = setupPromptFixture();
+        const skillsRefresh = deferred<{data: []}>();
+        const listSkillsSpy = vi.spyOn(mockFixture.getCodexAppServerClient(), "listSkills")
+            .mockReturnValue(skillsRefresh.promise);
+        const controller = new AbortController();
+
+        const promptPromise = mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "long running prompt" }],
+        }, controller.signal);
+
+        await vi.waitFor(() => {
+            expect(listSkillsSpy).toHaveBeenCalled();
+        });
+
+        controller.abort();
+        await expect(promptPromise).resolves.toMatchObject({stopReason: "cancelled"});
+
+        skillsRefresh.resolve({data: []});
+        await flushAsyncWork();
+        expect(turnStartSpy).not.toHaveBeenCalled();
+    });
+
     it('should send attachments as prompt items', async () => {
         const mockFixture = createCodexMockTestFixture();
         const codexAcpAgent = mockFixture.getCodexAcpAgent();
@@ -909,25 +1248,51 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         const mockFixture = createCodexMockTestFixture();
         const codexAcpAgent = mockFixture.getCodexAcpAgent();
 
-        const listSkillsSpy = vi.spyOn(mockFixture.getCodexAcpClient(), "listSkills");
+        vi.spyOn(mockFixture.getCodexAcpClient(), "listSkills").mockResolvedValue({data: []});
 
         // @ts-expect-error - exercising private helper
-        await codexAcpAgent.availableCommands.publish("session-id");
+        await codexAcpAgent.availableCommands.publish(createTestSessionState({
+            sessionId: "session-id",
+            cwd: "/workspace",
+        }));
 
-        expect(listSkillsSpy).not.toHaveBeenCalled();
+        expect(mockFixture.getCodexAcpClient().listSkills).toHaveBeenCalledWith({
+            cwds: ["/workspace"],
+        });
+
         await expect(mockFixture.getAcpConnectionDump([])).toMatchFileSnapshot("data/available-commands-build-in.json");
     });
 
-    it('should not expose skills as available commands', async () => {
+    it('should return available commands from skills list', async () => {
         const mockFixture = createCodexMockTestFixture();
         const codexAcpAgent = mockFixture.getCodexAcpAgent();
 
-        const listSkillsSpy = vi.spyOn(mockFixture.getCodexAcpClient(), "listSkills");
+        vi.spyOn(mockFixture.getCodexAcpClient(), "listSkills").mockResolvedValue({
+            data: [{
+                cwd: "/workspace",
+                skills: [{
+                    name: "build",
+                    description: "Build the project",
+                    shortDescription: "Build",
+                    path: "/workspace",
+                    scope: "user",
+                    enabled: true,
+                }],
+                errors: [],
+            }],
+        });
 
         // @ts-expect-error - exercising private helper
-        await codexAcpAgent.availableCommands.publish("session-id");
+        await codexAcpAgent.availableCommands.publish(createTestSessionState({
+            sessionId: "session-id",
+            cwd: "/workspace",
+            additionalDirectories: ["/workspace/extra"],
+        }));
 
-        expect(listSkillsSpy).not.toHaveBeenCalled();
+        expect(mockFixture.getCodexAcpClient().listSkills).toHaveBeenCalledWith({
+            cwds: ["/workspace", "/workspace/extra"],
+        });
+
         await expect(mockFixture.getAcpConnectionDump([])).toMatchFileSnapshot("data/available-commands-skills.json");
     });
 
@@ -942,17 +1307,11 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         await expect(mockFixture.getAcpConnectionDump([])).toMatchFileSnapshot("data/command-status.json");
     });
 
-    it('handles goal slash command locally', async () => {
+    it('shows the current goal for the local goal slash command', async () => {
         const { mockFixture, turnStartSpy } = setupPromptFixture();
         const getThreadGoalSpy = vi.spyOn(mockFixture.getCodexAcpClient(), "getThreadGoal")
             .mockResolvedValueOnce({ goal: null })
-            .mockResolvedValueOnce({ goal: createThreadGoal() })
-            .mockResolvedValueOnce({ goal: null })
-            .mockResolvedValueOnce({ goal: createThreadGoal({ status: "paused" }) });
-        const setThreadGoalSpy = vi.spyOn(mockFixture.getCodexAcpClient(), "setThreadGoal")
-            .mockResolvedValue({ goal: createThreadGoal({ objective: "Ship it" }) });
-        const clearThreadGoalSpy = vi.spyOn(mockFixture.getCodexAcpClient(), "clearThreadGoal")
-            .mockResolvedValue({ cleared: false });
+            .mockResolvedValueOnce({ goal: createThreadGoal() });
 
         await mockFixture.getCodexAcpAgent().prompt({
             sessionId: "session-id",
@@ -966,42 +1325,9 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             prompt: [{ type: "text", text: "/goal" }],
         });
         expect(mockFixture.getAcpConnectionEvents([]).at(-1)!.args[0].update.content.text)
-            .toBe("Goal active: Ship goal support\ntokens used: 42 of 1000\ntime used: 12 seconds");
+            .toBe("Goal active: Ship the migration and keep tests green\ntokens used: 0\ntime used: 0 seconds");
 
-        await mockFixture.getCodexAcpAgent().prompt({
-            sessionId: "session-id",
-            prompt: [{ type: "text", text: "/goal Ship it" }],
-        });
-        expect(setThreadGoalSpy).toHaveBeenCalledWith({
-            threadId: "session-id",
-            objective: "Ship it",
-            status: "active",
-        });
-
-        await mockFixture.getCodexAcpAgent().prompt({
-            sessionId: "session-id",
-            prompt: [{ type: "text", text: "/goal pause" }],
-        });
-        expect(mockFixture.getAcpConnectionEvents([]).at(-1)!.args[0].update.content.text)
-            .toBe("No goal is currently set. Use `/goal <objective>` to create one.");
-
-        await mockFixture.getCodexAcpAgent().prompt({
-            sessionId: "session-id",
-            prompt: [{ type: "text", text: "/goal resume" }],
-        });
-        expect(setThreadGoalSpy).toHaveBeenCalledWith({
-            threadId: "session-id",
-            status: "active",
-        });
-
-        await mockFixture.getCodexAcpAgent().prompt({
-            sessionId: "session-id",
-            prompt: [{ type: "text", text: "/goal clear" }],
-        });
-        expect(clearThreadGoalSpy).toHaveBeenCalledWith({ threadId: "session-id" });
-        expect(mockFixture.getAcpConnectionEvents([]).at(-1)!.args[0].update.content.text)
-            .toBe("No goal to clear. This thread does not currently have a goal.");
-
+        expect(getThreadGoalSpy).toHaveBeenCalledTimes(2);
         expect(getThreadGoalSpy).toHaveBeenCalledWith({ threadId: "session-id" });
         expect(turnStartSpy).not.toHaveBeenCalled();
     });
@@ -1105,6 +1431,46 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         expect(promptResolved).toBe(true);
     });
 
+    it('interrupts a late-started review slash command after the ACP prompt request is cancelled', async () => {
+        const { mockFixture } = setupPromptFixture();
+        const reviewStart = deferred<ReviewStartResponse>();
+        const reviewStartSpy = vi.spyOn(mockFixture.getCodexAppServerClient(), "reviewStart")
+            .mockReturnValue(reviewStart.promise);
+        const reviewCompleted = deferred<TurnCompletedNotification>();
+        const awaitTurnCompletedSpy = vi.spyOn(mockFixture.getCodexAppServerClient(), "awaitTurnCompleted")
+            .mockReturnValue(reviewCompleted.promise);
+        const turnInterruptSpy = vi.spyOn(mockFixture.getCodexAcpClient(), "turnInterrupt")
+            .mockImplementation(async ({threadId, turnId}) => {
+                reviewCompleted.resolve({
+                    threadId,
+                    turn: createTurn(turnId, "interrupted"),
+                });
+            });
+        const controller = new AbortController();
+
+        const promptPromise = mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "/review" }],
+        }, controller.signal);
+
+        await vi.waitFor(() => {
+            expect(reviewStartSpy).toHaveBeenCalled();
+        });
+
+        controller.abort();
+        await expect(promptPromise).resolves.toMatchObject({stopReason: "cancelled"});
+
+        reviewStart.resolve(createReviewStartResponse("review-thread-id", "review-turn-id"));
+
+        await vi.waitFor(() => {
+            expect(turnInterruptSpy).toHaveBeenCalledWith({
+                threadId: "review-thread-id",
+                turnId: "review-turn-id",
+            });
+        });
+        expect(awaitTurnCompletedSpy).toHaveBeenCalledWith("review-thread-id", "review-turn-id");
+    });
+
     it('returns cancelled when review slash command is interrupted', async () => {
         const { mockFixture } = setupPromptFixture();
         vi.spyOn(mockFixture.getCodexAppServerClient(), "reviewStart")
@@ -1153,6 +1519,1131 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         expect(mockFixture.getAcpConnectionDump([])).toContain("Context compacted");
     });
 
+    it('handles goal slash commands through Codex app server', async () => {
+        const { mockFixture, turnStartSpy } = setupPromptFixture();
+        const goalRunSpy = vi.spyOn(mockFixture.getCodexAppServerClient(), "runGoalSet")
+            .mockResolvedValue({
+                threadId: "session-id",
+                turn: createTurn("goal-turn-id", "completed"),
+            });
+        const goalClearSpy = vi.spyOn(mockFixture.getCodexAppServerClient(), "runGoalClear")
+            .mockResolvedValue(undefined);
+
+        await mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "/goal Ship the migration and keep tests green" }],
+        });
+        await mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "/goal pause" }],
+        });
+        await mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "/goal resume" }],
+        });
+        await mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "/goal clear" }],
+        });
+
+        expect(goalRunSpy).toHaveBeenNthCalledWith(1, {
+            threadId: "session-id",
+            objective: "Ship the migration and keep tests green",
+            status: "active",
+        }, expect.any(Function));
+        expect(goalRunSpy).toHaveBeenNthCalledWith(2, {
+            threadId: "session-id",
+            status: "paused",
+        });
+        expect(goalRunSpy).toHaveBeenNthCalledWith(3, {
+            threadId: "session-id",
+            status: "active",
+        }, expect.any(Function));
+        expect(goalClearSpy).toHaveBeenCalledWith({ threadId: "session-id" });
+        expect(turnStartSpy).not.toHaveBeenCalled();
+    });
+
+    it('waits for goal slash command turn routing', async () => {
+        const { mockFixture } = setupPromptFixture();
+        const goal = createThreadGoal();
+        vi.spyOn(mockFixture.getCodexAppServerClient(), "threadGoalSet")
+            .mockResolvedValue({ goal });
+        const awaitTurnCompletedSpy = vi.spyOn(mockFixture.getCodexAppServerClient(), "awaitTurnCompleted");
+
+        let promptResolved = false;
+        const promptPromise = mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "/goal Ship the migration and keep tests green" }],
+        }).then((response) => {
+            promptResolved = true;
+            return response;
+        });
+
+        await vi.waitFor(() => {
+            expect(mockFixture.getCodexAppServerClient().threadGoalSet).toHaveBeenCalledWith({
+                threadId: "session-id",
+                objective: "Ship the migration and keep tests green",
+                status: "active",
+            });
+        });
+        await Promise.resolve();
+        expect(promptResolved).toBe(false);
+        expect(mockFixture.getCodexAppServerClient().awaitTurnCompleted).not.toHaveBeenCalled();
+
+        mockFixture.sendServerNotification({
+            method: "thread/goal/updated",
+            params: {
+                threadId: "session-id",
+                turnId: null,
+                goal,
+            },
+        });
+        mockFixture.sendServerNotification({
+            method: "thread/status/changed",
+            params: {
+                threadId: "session-id",
+                status: {
+                    type: "active",
+                    activeFlags: [],
+                },
+            },
+        });
+        await Promise.resolve();
+        expect(promptResolved).toBe(false);
+        expect(mockFixture.getCodexAppServerClient().awaitTurnCompleted).not.toHaveBeenCalled();
+
+        mockFixture.sendServerNotification({
+            method: "turn/started",
+            params: {
+                threadId: "session-id",
+                turn: createTurn("goal-turn-id", "inProgress"),
+            },
+        });
+        await Promise.resolve();
+        expect(promptResolved).toBe(false);
+        expect(mockFixture.getCodexAppServerClient().awaitTurnCompleted).not.toHaveBeenCalled();
+
+        mockFixture.sendServerNotification({
+            method: "item/agentMessage/delta",
+            params: {
+                threadId: "session-id",
+                turnId: "goal-turn-id",
+                itemId: "goal-message-id",
+                delta: "I",
+            },
+        });
+        await Promise.resolve();
+        expect(promptResolved).toBe(false);
+
+        mockFixture.sendServerNotification(createTurnCompletedNotification("session-id", "goal-turn-id"));
+
+        await vi.waitFor(() => {
+            expect(promptResolved).toBe(true);
+        });
+        await expect(promptPromise).resolves.toEqual(expect.objectContaining({
+            stopReason: "end_turn",
+        }));
+        expect(awaitTurnCompletedSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not complete no-turn goal slash command before the goal update and runtime grace are handled', async () => {
+        const { mockFixture } = setupPromptFixture();
+        const goal = createThreadGoal({updatedAt: 1710000100});
+        const threadGoalSetSpy = vi.spyOn(mockFixture.getCodexAppServerClient(), "threadGoalSet")
+            .mockResolvedValue({ goal });
+        let promptResolved = false;
+
+        const promptPromise = mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "/goal Ship the migration and keep tests green" }],
+        }).then((response) => {
+            promptResolved = true;
+            return response;
+        });
+
+        await vi.waitFor(() => {
+            expect(threadGoalSetSpy).toHaveBeenCalledWith({
+                threadId: "session-id",
+                objective: "Ship the migration and keep tests green",
+                status: "active",
+            });
+        });
+        await flushAsyncWork();
+        expect(promptResolved).toBe(false);
+
+        mockFixture.sendServerNotification({
+            method: "thread/goal/updated",
+            params: {
+                threadId: "session-id",
+                turnId: null,
+                goal,
+            },
+        });
+
+        await flushAsyncWork();
+        expect(promptResolved).toBe(false);
+
+        await expect(promptPromise).resolves.toEqual(expect.objectContaining({
+            stopReason: "end_turn",
+        }));
+        expect(mockFixture.getAcpConnectionEvents([])).toContainEqual(expect.objectContaining({
+            args: [expect.objectContaining({
+                update: {
+                    sessionUpdate: "session_info_update",
+                    _meta: {
+                        codex: {
+                            goal: {
+                                objective: "Ship the migration and keep tests green",
+                                status: "active",
+                                tokenBudget: null,
+                            },
+                        },
+                    },
+                },
+            })],
+        }));
+    });
+
+    it('completes goal slash command when a turn routes after the goal update', async () => {
+        const { mockFixture } = setupPromptFixture();
+        const goal = createThreadGoal({updatedAt: 1710000150});
+        const threadGoalSetSpy = vi.spyOn(mockFixture.getCodexAppServerClient(), "threadGoalSet")
+            .mockResolvedValue({ goal });
+        const awaitTurnCompletedSpy = vi.spyOn(mockFixture.getCodexAppServerClient(), "awaitTurnCompleted")
+            .mockResolvedValue({
+                threadId: "session-id",
+                turn: createTurn("goal-turn-id", "completed"),
+            });
+        let promptResolved = false;
+
+        const promptPromise = mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "/goal Ship the migration and keep tests green" }],
+        }).then((response) => {
+            promptResolved = true;
+            return response;
+        });
+
+        await vi.waitFor(() => {
+            expect(threadGoalSetSpy).toHaveBeenCalledWith({
+                threadId: "session-id",
+                objective: "Ship the migration and keep tests green",
+                status: "active",
+            });
+        });
+
+        mockFixture.sendServerNotification({
+            method: "thread/goal/updated",
+            params: {
+                threadId: "session-id",
+                turnId: null,
+                goal,
+            },
+        });
+
+        await flushAsyncWork();
+        expect(promptResolved).toBe(false);
+        expect(awaitTurnCompletedSpy).not.toHaveBeenCalled();
+
+        mockFixture.sendServerNotification({
+            method: "item/agentMessage/delta",
+            params: {
+                threadId: "session-id",
+                turnId: "goal-turn-id",
+                itemId: "goal-message-id",
+                delta: "late goal output",
+            },
+        });
+        await flushAsyncWork();
+        expect(promptResolved).toBe(false);
+
+        mockFixture.sendServerNotification(createTurnCompletedNotification("session-id", "goal-turn-id"));
+
+        await expect(promptPromise).resolves.toEqual(expect.objectContaining({
+            stopReason: "end_turn",
+        }));
+        expect(promptResolved).toBe(true);
+        expect(awaitTurnCompletedSpy).not.toHaveBeenCalled();
+    });
+
+    it('waits for goal turn completion after the goal completes before streamed output finishes', async () => {
+        const { mockFixture } = setupPromptFixture();
+        const goal = createThreadGoal({updatedAt: 1710000160});
+        const completedGoal = createThreadGoal({
+            status: "complete",
+            updatedAt: 1710000170,
+            tokensUsed: 42,
+            timeUsedSeconds: 8,
+        });
+        vi.spyOn(mockFixture.getCodexAppServerClient(), "threadGoalSet")
+            .mockResolvedValue({ goal });
+        let promptResolved = false;
+
+        const promptPromise = mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "/goal tell me a joke" }],
+        }).then((response) => {
+            promptResolved = true;
+            return response;
+        });
+
+        await vi.waitFor(() => {
+            expect(mockFixture.getCodexAppServerClient().threadGoalSet).toHaveBeenCalledWith({
+                threadId: "session-id",
+                objective: "tell me a joke",
+                status: "active",
+            });
+        });
+
+        mockFixture.sendServerNotification({
+            method: "thread/goal/updated",
+            params: {
+                threadId: "session-id",
+                turnId: null,
+                goal,
+            },
+        });
+        mockFixture.sendServerNotification({
+            method: "thread/status/changed",
+            params: {
+                threadId: "session-id",
+                status: {
+                    type: "active",
+                    activeFlags: [],
+                },
+            },
+        });
+        mockFixture.sendServerNotification({
+            method: "thread/goal/updated",
+            params: {
+                threadId: "session-id",
+                turnId: "goal-turn-id",
+                goal: completedGoal,
+            },
+        });
+        mockFixture.sendServerNotification({
+            method: "item/agentMessage/delta",
+            params: {
+                threadId: "session-id",
+                turnId: "goal-turn-id",
+                itemId: "goal-message-id",
+                delta: "Why",
+            },
+        });
+        await flushAsyncWork();
+        expect(promptResolved).toBe(false);
+
+        mockFixture.sendServerNotification({
+            method: "item/agentMessage/delta",
+            params: {
+                threadId: "session-id",
+                turnId: "goal-turn-id",
+                itemId: "goal-message-id",
+                delta: " did the test wait?",
+            },
+        });
+        mockFixture.sendServerNotification(createTurnCompletedNotification("session-id", "goal-turn-id"));
+
+        await expect(promptPromise).resolves.toEqual(expect.objectContaining({
+            stopReason: "end_turn",
+        }));
+        expect(promptResolved).toBe(true);
+    });
+
+    it('does not start the no-turn grace period before the goal update is handled', async () => {
+        vi.useFakeTimers();
+        try {
+            const mockFixture = createCodexMockTestFixture();
+            const codexAppServerClient = mockFixture.getCodexAppServerClient();
+            const goal = createThreadGoal({updatedAt: 1710000200});
+            const threadGoalSet = deferred<{goal: ThreadGoal}>();
+            const threadGoalSetSpy = vi.spyOn(codexAppServerClient, "threadGoalSet")
+                .mockReturnValue(threadGoalSet.promise);
+            const awaitTurnCompletedSpy = vi.spyOn(codexAppServerClient, "awaitTurnCompleted")
+                .mockResolvedValue({
+                    threadId: "session-id",
+                    turn: createTurn("goal-turn-id", "completed"),
+                });
+            let resultSettled = false;
+
+            const resultPromise = codexAppServerClient.runGoalSet({
+                threadId: "session-id",
+                objective: "Ship the migration and keep tests green",
+                status: "active",
+            }, undefined, undefined).finally(() => {
+                resultSettled = true;
+            });
+
+            await vi.waitFor(() => {
+                expect(threadGoalSetSpy).toHaveBeenCalledWith({
+                    threadId: "session-id",
+                    objective: "Ship the migration and keep tests green",
+                    status: "active",
+                });
+            });
+
+            threadGoalSet.resolve({goal});
+            await vi.advanceTimersByTimeAsync(10_000);
+            await Promise.resolve();
+            expect(resultSettled).toBe(false);
+            expect(awaitTurnCompletedSpy).not.toHaveBeenCalled();
+
+            mockFixture.sendServerNotification({
+                method: "thread/goal/updated",
+                params: {
+                    threadId: "session-id",
+                    turnId: null,
+                    goal,
+                },
+            });
+            await Promise.resolve();
+            expect(resultSettled).toBe(false);
+            expect(awaitTurnCompletedSpy).not.toHaveBeenCalled();
+
+            mockFixture.sendServerNotification({
+                method: "item/agentMessage/delta",
+                params: {
+                    threadId: "session-id",
+                    turnId: "goal-turn-id",
+                    itemId: "goal-message-id",
+                    delta: "late goal output",
+                },
+            });
+
+            await vi.advanceTimersByTimeAsync(0);
+            await Promise.resolve();
+            expect(resultSettled).toBe(false);
+
+            mockFixture.sendServerNotification(createTurnCompletedNotification("session-id", "goal-turn-id"));
+            await vi.advanceTimersByTimeAsync(0);
+            await expect(resultPromise).resolves.toMatchObject({
+                threadId: "session-id",
+                turn: {
+                    id: "goal-turn-id",
+                    status: "completed",
+                },
+            });
+            expect(awaitTurnCompletedSpy).not.toHaveBeenCalled();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('completes goal set when a turn routes after the goal update', async () => {
+        const mockFixture = createCodexMockTestFixture();
+        const codexAppServerClient = mockFixture.getCodexAppServerClient();
+        const goal = createThreadGoal({updatedAt: 1710000200});
+        const threadGoalSetSpy = vi.spyOn(codexAppServerClient, "threadGoalSet")
+            .mockResolvedValue({goal});
+        const awaitTurnCompletedSpy = vi.spyOn(codexAppServerClient, "awaitTurnCompleted")
+            .mockResolvedValue({
+                threadId: "session-id",
+                turn: createTurn("goal-turn-id", "completed"),
+            });
+        let resultSettled = false;
+
+        const resultPromise = codexAppServerClient.runGoalSet({
+            threadId: "session-id",
+            objective: "Ship the migration and keep tests green",
+            status: "active",
+        }, undefined, undefined).finally(() => {
+            resultSettled = true;
+        });
+
+        await vi.waitFor(() => {
+            expect(threadGoalSetSpy).toHaveBeenCalledWith({
+                threadId: "session-id",
+                objective: "Ship the migration and keep tests green",
+                status: "active",
+            });
+        });
+
+        mockFixture.sendServerNotification({
+            method: "thread/goal/updated",
+            params: {
+                threadId: "session-id",
+                turnId: null,
+                goal,
+            },
+        });
+        await flushAsyncWork();
+        expect(resultSettled).toBe(false);
+        expect(awaitTurnCompletedSpy).not.toHaveBeenCalled();
+
+        mockFixture.sendServerNotification({
+            method: "item/agentMessage/delta",
+            params: {
+                threadId: "session-id",
+                turnId: "goal-turn-id",
+                itemId: "goal-message-id",
+                delta: "late goal output",
+            },
+        });
+
+        await flushAsyncWork();
+        expect(resultSettled).toBe(false);
+
+        mockFixture.sendServerNotification(createTurnCompletedNotification("session-id", "goal-turn-id"));
+        await expect(resultPromise).resolves.toMatchObject({
+            threadId: "session-id",
+            turn: {
+                id: "goal-turn-id",
+                status: "completed",
+            },
+        });
+        expect(awaitTurnCompletedSpy).not.toHaveBeenCalled();
+    });
+
+    it('keeps goal set pending while the thread is active before a turn routes', async () => {
+        vi.useFakeTimers();
+        try {
+            const mockFixture = createCodexMockTestFixture();
+            const codexAppServerClient = mockFixture.getCodexAppServerClient();
+            const goal = createThreadGoal({updatedAt: 1710000225});
+            const threadGoalSetSpy = vi.spyOn(codexAppServerClient, "threadGoalSet")
+                .mockResolvedValue({goal});
+            const awaitTurnCompletedSpy = vi.spyOn(codexAppServerClient, "awaitTurnCompleted")
+                .mockResolvedValue({
+                    threadId: "session-id",
+                    turn: createTurn("goal-turn-id", "completed"),
+                });
+            let resultSettled = false;
+
+            const resultPromise = codexAppServerClient.runGoalSet({
+                threadId: "session-id",
+                objective: "Ship the migration and keep tests green",
+                status: "active",
+            }, undefined, undefined).finally(() => {
+                resultSettled = true;
+            });
+
+            await vi.waitFor(() => {
+                expect(threadGoalSetSpy).toHaveBeenCalledWith({
+                    threadId: "session-id",
+                    objective: "Ship the migration and keep tests green",
+                    status: "active",
+                });
+            });
+
+            mockFixture.sendServerNotification({
+                method: "thread/goal/updated",
+                params: {
+                    threadId: "session-id",
+                    turnId: null,
+                    goal,
+                },
+            });
+            mockFixture.sendServerNotification({
+                method: "thread/status/changed",
+                params: {
+                    threadId: "session-id",
+                    status: {
+                        type: "active",
+                        activeFlags: [],
+                    },
+                },
+            });
+
+            await vi.advanceTimersByTimeAsync(10_000);
+            await Promise.resolve();
+            expect(resultSettled).toBe(false);
+            expect(awaitTurnCompletedSpy).not.toHaveBeenCalled();
+
+            mockFixture.sendServerNotification({
+                method: "item/agentMessage/delta",
+                params: {
+                    threadId: "session-id",
+                    turnId: "goal-turn-id",
+                    itemId: "goal-message-id",
+                    delta: "late goal output",
+                },
+            });
+
+            await vi.advanceTimersByTimeAsync(0);
+            await Promise.resolve();
+            expect(resultSettled).toBe(false);
+
+            mockFixture.sendServerNotification(createTurnCompletedNotification("session-id", "goal-turn-id"));
+            await vi.advanceTimersByTimeAsync(0);
+            await expect(resultPromise).resolves.toMatchObject({
+                threadId: "session-id",
+                turn: {
+                    id: "goal-turn-id",
+                    status: "completed",
+                },
+            });
+            expect(awaitTurnCompletedSpy).not.toHaveBeenCalled();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('keeps goal set pending after turn start until turn completion routes', async () => {
+        vi.useFakeTimers();
+        try {
+            const mockFixture = createCodexMockTestFixture();
+            const codexAppServerClient = mockFixture.getCodexAppServerClient();
+            const goal = createThreadGoal({updatedAt: 1710000235});
+            const threadGoalSetSpy = vi.spyOn(codexAppServerClient, "threadGoalSet")
+                .mockResolvedValue({goal});
+            const awaitTurnCompletedSpy = vi.spyOn(codexAppServerClient, "awaitTurnCompleted")
+                .mockResolvedValue({
+                    threadId: "session-id",
+                    turn: createTurn("goal-turn-id", "completed"),
+                });
+            const onTurnStarted = vi.fn();
+            let resultSettled = false;
+
+            const resultPromise = codexAppServerClient.runGoalSet({
+                threadId: "session-id",
+                objective: "Ship the migration and keep tests green",
+                status: "active",
+            }, onTurnStarted).finally(() => {
+                resultSettled = true;
+            });
+
+            await vi.waitFor(() => {
+                expect(threadGoalSetSpy).toHaveBeenCalledWith({
+                    threadId: "session-id",
+                    objective: "Ship the migration and keep tests green",
+                    status: "active",
+                });
+            });
+
+            mockFixture.sendServerNotification({
+                method: "thread/goal/updated",
+                params: {
+                    threadId: "session-id",
+                    turnId: null,
+                    goal,
+                },
+            });
+            mockFixture.sendServerNotification({
+                method: "turn/started",
+                params: {
+                    threadId: "session-id",
+                    turn: createTurn("goal-turn-id", "inProgress"),
+                },
+            });
+
+            await vi.advanceTimersByTimeAsync(10_000);
+            await Promise.resolve();
+            expect(onTurnStarted).toHaveBeenCalledWith("goal-turn-id");
+            expect(resultSettled).toBe(false);
+            expect(awaitTurnCompletedSpy).not.toHaveBeenCalled();
+
+            mockFixture.sendServerNotification({
+                method: "item/agentMessage/delta",
+                params: {
+                    threadId: "session-id",
+                    turnId: "goal-turn-id",
+                    itemId: "goal-message-id",
+                    delta: "late goal output",
+                },
+            });
+
+            await vi.advanceTimersByTimeAsync(0);
+            await Promise.resolve();
+            expect(resultSettled).toBe(false);
+
+            mockFixture.sendServerNotification(createTurnCompletedNotification("session-id", "goal-turn-id"));
+            await vi.advanceTimersByTimeAsync(0);
+            await expect(resultPromise).resolves.toMatchObject({
+                threadId: "session-id",
+                turn: {
+                    id: "goal-turn-id",
+                    status: "completed",
+                },
+            });
+            expect(awaitTurnCompletedSpy).not.toHaveBeenCalled();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('completes goal set when active thread returns idle without routing a turn', async () => {
+        vi.useFakeTimers();
+        try {
+            const mockFixture = createCodexMockTestFixture();
+            const codexAppServerClient = mockFixture.getCodexAppServerClient();
+            const goal = createThreadGoal({updatedAt: 1710000250});
+            const threadGoalSetSpy = vi.spyOn(codexAppServerClient, "threadGoalSet")
+                .mockResolvedValue({goal});
+            let resultSettled = false;
+
+            const resultPromise = codexAppServerClient.runGoalSet({
+                threadId: "session-id",
+                objective: "Ship the migration and keep tests green",
+                status: "active",
+            }, undefined, undefined).finally(() => {
+                resultSettled = true;
+            });
+
+            await vi.waitFor(() => {
+                expect(threadGoalSetSpy).toHaveBeenCalledWith({
+                    threadId: "session-id",
+                    objective: "Ship the migration and keep tests green",
+                    status: "active",
+                });
+            });
+
+            mockFixture.sendServerNotification({
+                method: "thread/goal/updated",
+                params: {
+                    threadId: "session-id",
+                    turnId: null,
+                    goal,
+                },
+            });
+            mockFixture.sendServerNotification({
+                method: "thread/status/changed",
+                params: {
+                    threadId: "session-id",
+                    status: {
+                        type: "active",
+                        activeFlags: [],
+                    },
+                },
+            });
+
+            await vi.advanceTimersByTimeAsync(10_000);
+            await Promise.resolve();
+            expect(resultSettled).toBe(false);
+
+            mockFixture.sendServerNotification({
+                method: "thread/status/changed",
+                params: {
+                    threadId: "session-id",
+                    status: { type: "idle" },
+                },
+            });
+
+            await expect(resultPromise).resolves.toBeNull();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('waits for paused goal update before completing goal status set', async () => {
+        const mockFixture = createCodexMockTestFixture();
+        const codexAppServerClient = mockFixture.getCodexAppServerClient();
+        const goal = createThreadGoal({status: "paused", updatedAt: 1710000260});
+        const threadGoalSet = deferred<{goal: ThreadGoal}>();
+        const threadGoalSetSpy = vi.spyOn(codexAppServerClient, "threadGoalSet")
+            .mockReturnValue(threadGoalSet.promise);
+        const awaitTurnCompletedSpy = vi.spyOn(codexAppServerClient, "awaitTurnCompleted");
+        let resultSettled = false;
+
+        const resultPromise = codexAppServerClient.runGoalSet({
+            threadId: "session-id",
+            status: "paused",
+        }).finally(() => {
+            resultSettled = true;
+        });
+
+        await vi.waitFor(() => {
+            expect(threadGoalSetSpy).toHaveBeenCalledWith({
+                threadId: "session-id",
+                status: "paused",
+            });
+        });
+
+        threadGoalSet.resolve({goal});
+        await flushAsyncWork();
+        expect(resultSettled).toBe(false);
+        expect(awaitTurnCompletedSpy).not.toHaveBeenCalled();
+
+        mockFixture.sendServerNotification({
+            method: "thread/goal/updated",
+            params: {
+                threadId: "session-id",
+                turnId: null,
+                goal,
+            },
+        });
+
+        await expect(resultPromise).resolves.toBeNull();
+        expect(awaitTurnCompletedSpy).not.toHaveBeenCalled();
+    });
+
+    it('waits for goal cleared notification before completing goal clear', async () => {
+        const mockFixture = createCodexMockTestFixture();
+        const codexAppServerClient = mockFixture.getCodexAppServerClient();
+        const threadGoalClear = deferred<{cleared: boolean}>();
+        const threadGoalClearSpy = vi.spyOn(codexAppServerClient, "threadGoalClear")
+            .mockReturnValue(threadGoalClear.promise);
+        let resultSettled = false;
+
+        const resultPromise = codexAppServerClient.runGoalClear({
+            threadId: "session-id",
+        }).finally(() => {
+            resultSettled = true;
+        });
+
+        await vi.waitFor(() => {
+            expect(threadGoalClearSpy).toHaveBeenCalledWith({
+                threadId: "session-id",
+            });
+        });
+
+        threadGoalClear.resolve({cleared: true});
+        await flushAsyncWork();
+        expect(resultSettled).toBe(false);
+
+        mockFixture.sendServerNotification({
+            method: "thread/goal/cleared",
+            params: {
+                threadId: "session-id",
+            },
+        });
+
+        await expect(resultPromise).resolves.toBeUndefined();
+    });
+
+    it('interrupts a late-started goal slash command after the ACP prompt request is cancelled', async () => {
+        const { mockFixture } = setupPromptFixture();
+        const goalCompleted = deferred<TurnCompletedNotification | null>();
+        let startGoalTurn: () => void = () => {};
+        const goalRunSpy = vi.spyOn(mockFixture.getCodexAppServerClient(), "runGoalSet")
+            .mockImplementation((_params, onTurnStarted) => {
+                startGoalTurn = () => onTurnStarted?.("goal-turn-id");
+                return goalCompleted.promise;
+            });
+        const turnInterruptSpy = vi.spyOn(mockFixture.getCodexAcpClient(), "turnInterrupt")
+            .mockImplementation(async ({threadId, turnId}) => {
+                goalCompleted.resolve({
+                    threadId,
+                    turn: createTurn(turnId, "interrupted"),
+                });
+            });
+        const controller = new AbortController();
+
+        const promptPromise = mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "/goal Ship the migration and keep tests green" }],
+        }, controller.signal);
+
+        await vi.waitFor(() => {
+            expect(goalRunSpy).toHaveBeenCalledWith({
+                threadId: "session-id",
+                objective: "Ship the migration and keep tests green",
+                status: "active",
+            }, expect.any(Function));
+        });
+
+        controller.abort();
+        await expect(promptPromise).resolves.toMatchObject({stopReason: "cancelled"});
+        expect(turnInterruptSpy).not.toHaveBeenCalled();
+
+        startGoalTurn();
+
+        await vi.waitFor(() => {
+            expect(turnInterruptSpy).toHaveBeenCalledWith({
+                threadId: "session-id",
+                turnId: "goal-turn-id",
+            });
+        });
+    });
+
+    it('interrupts a goal slash command when ACP cancel arrives before the first routed turn', async () => {
+        const { mockFixture, sessionState } = setupPromptFixture();
+        // @ts-expect-error - registering local session state for the ACP cancel path
+        mockFixture.getCodexAcpAgent().sessions.set("session-id", sessionState);
+        const codexAppServerClient = mockFixture.getCodexAppServerClient();
+        const goal = createThreadGoal();
+        const threadGoalSetSpy = vi.spyOn(codexAppServerClient, "threadGoalSet")
+            .mockResolvedValue({ goal });
+        const turnInterruptSpy = vi.spyOn(mockFixture.getCodexAcpClient(), "turnInterrupt")
+            .mockImplementation(async ({threadId, turnId}) => {
+                mockFixture.sendServerNotification({
+                    method: "turn/completed",
+                    params: {
+                        threadId,
+                        turn: createTurn(turnId, "interrupted"),
+                    },
+                });
+            });
+        let cancelResolved = false;
+
+        const promptPromise = mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "/goal Ship the migration and keep tests green" }],
+        });
+
+        await vi.waitFor(() => {
+            expect(threadGoalSetSpy).toHaveBeenCalledWith({
+                threadId: "session-id",
+                objective: "Ship the migration and keep tests green",
+                status: "active",
+            });
+        });
+
+        const cancelPromise = mockFixture.getCodexAcpAgent().cancel({sessionId: "session-id"})
+            .then(() => {
+                cancelResolved = true;
+            });
+        await flushAsyncWork();
+        expect(cancelResolved).toBe(false);
+
+        mockFixture.sendServerNotification({
+            method: "thread/goal/updated",
+            params: {
+                threadId: "session-id",
+                turnId: null,
+                goal,
+            },
+        });
+
+        mockFixture.sendServerNotification({
+            method: "item/agentMessage/delta",
+            params: {
+                threadId: "session-id",
+                turnId: "goal-turn-id",
+                itemId: "goal-message-id",
+                delta: "goal output",
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(turnInterruptSpy).toHaveBeenCalledWith({
+                threadId: "session-id",
+                turnId: "goal-turn-id",
+            });
+        });
+        await expect(cancelPromise).resolves.toBeUndefined();
+        await expect(promptPromise).resolves.toMatchObject({stopReason: "cancelled"});
+    });
+
+    it('suppresses the first routed goal notification after cancellation marks the turn stale', async () => {
+        const { mockFixture } = setupPromptFixture();
+        const codexAppServerClient = mockFixture.getCodexAppServerClient();
+        const goal = createThreadGoal();
+        const threadGoalSetSpy = vi.spyOn(codexAppServerClient, "threadGoalSet")
+            .mockResolvedValue({ goal });
+        const turnInterruptSpy = vi.spyOn(mockFixture.getCodexAcpClient(), "turnInterrupt")
+            .mockResolvedValue(undefined);
+        const controller = new AbortController();
+
+        const promptPromise = mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "/goal Ship the migration and keep tests green" }],
+        }, controller.signal);
+
+        await vi.waitFor(() => {
+            expect(threadGoalSetSpy).toHaveBeenCalledWith({
+                threadId: "session-id",
+                objective: "Ship the migration and keep tests green",
+                status: "active",
+            });
+        });
+
+        controller.abort();
+        await expect(promptPromise).resolves.toMatchObject({stopReason: "cancelled"});
+        mockFixture.clearAcpConnectionDump();
+
+        mockFixture.sendServerNotification({
+            method: "thread/goal/updated",
+            params: {
+                threadId: "session-id",
+                turnId: null,
+                goal,
+            },
+        });
+
+        mockFixture.sendServerNotification({
+            method: "item/agentMessage/delta",
+            params: {
+                threadId: "session-id",
+                turnId: "goal-turn-id",
+                itemId: "goal-message-id",
+                delta: "leaked goal output",
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(turnInterruptSpy).toHaveBeenCalledWith({
+                threadId: "session-id",
+                turnId: "goal-turn-id",
+            });
+        });
+        await flushAsyncWork();
+        expect(mockFixture.getAcpConnectionDump([])).not.toContain("leaked goal output");
+    });
+
+    it('does not hang when goal set starts no continuation turn', async () => {
+        const mockFixture = createCodexMockTestFixture();
+        const codexAppServerClient = mockFixture.getCodexAppServerClient();
+        const goal = createThreadGoal({updatedAt: 1710000300});
+        const threadGoalSetSpy = vi.spyOn(codexAppServerClient, "threadGoalSet")
+            .mockResolvedValue({ goal });
+        const awaitTurnCompletedSpy = vi.spyOn(codexAppServerClient, "awaitTurnCompleted");
+        let resultSettled = false;
+
+        const resultPromise = codexAppServerClient.runGoalSet({
+            threadId: "session-id",
+            objective: "Ship the migration and keep tests green",
+            status: "active",
+        }, undefined, 0).finally(() => {
+            resultSettled = true;
+        });
+
+        await vi.waitFor(() => {
+            expect(threadGoalSetSpy).toHaveBeenCalledWith({
+                threadId: "session-id",
+                objective: "Ship the migration and keep tests green",
+                status: "active",
+            });
+        });
+        await flushAsyncWork();
+        expect(resultSettled).toBe(false);
+
+        mockFixture.sendServerNotification({
+            method: "thread/goal/updated",
+            params: {
+                threadId: "session-id",
+                turnId: null,
+                goal,
+            },
+        });
+
+        await expect(resultPromise).resolves.toBeNull();
+        expect(awaitTurnCompletedSpy).not.toHaveBeenCalled();
+    });
+
+    it('keeps goal set pending after elapsed startup time until a turn is routed', async () => {
+        vi.useFakeTimers();
+        try {
+            const mockFixture = createCodexMockTestFixture();
+            const codexAppServerClient = mockFixture.getCodexAppServerClient();
+            const goal = createThreadGoal({updatedAt: 1710000400});
+            vi.spyOn(codexAppServerClient, "threadGoalSet")
+                .mockResolvedValue({ goal });
+            const awaitTurnCompletedSpy = vi.spyOn(codexAppServerClient, "awaitTurnCompleted")
+                .mockResolvedValue({
+                    threadId: "session-id",
+                    turn: createTurn("goal-turn-id", "completed"),
+                });
+            let resultSettled = false;
+
+            const resultPromise = codexAppServerClient.runGoalSet({
+                threadId: "session-id",
+                objective: "Ship the migration and keep tests green",
+                status: "active",
+            }, undefined, undefined).finally(() => {
+                resultSettled = true;
+            });
+
+            await Promise.resolve();
+            await vi.advanceTimersByTimeAsync(10_000);
+            await Promise.resolve();
+            expect(resultSettled).toBe(false);
+
+            mockFixture.sendServerNotification({
+                method: "thread/goal/updated",
+                params: {
+                    threadId: "session-id",
+                    turnId: null,
+                    goal,
+                },
+            });
+            await Promise.resolve();
+            expect(resultSettled).toBe(false);
+
+            mockFixture.sendServerNotification({
+                method: "item/agentMessage/delta",
+                params: {
+                    threadId: "session-id",
+                    turnId: "goal-turn-id",
+                    itemId: "goal-message-id",
+                    delta: "late goal output",
+                },
+            });
+
+            await Promise.resolve();
+            await Promise.resolve();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(resultSettled).toBe(false);
+
+            mockFixture.sendServerNotification(createTurnCompletedNotification("session-id", "goal-turn-id"));
+            await vi.advanceTimersByTimeAsync(0);
+            await expect(resultPromise).resolves.toMatchObject({
+                threadId: "session-id",
+                turn: {
+                    id: "goal-turn-id",
+                    status: "completed",
+                },
+            });
+            expect(awaitTurnCompletedSpy).not.toHaveBeenCalled();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('completes goal slash command when app server starts no continuation turn', async () => {
+        const { mockFixture, turnStartSpy } = setupPromptFixture();
+        const goalRunSpy = vi.spyOn(mockFixture.getCodexAppServerClient(), "runGoalSet")
+            .mockResolvedValue(null);
+
+        const response = await mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "/goal Ship the migration and keep tests green" }],
+        });
+
+        expect(response.stopReason).toBe("end_turn");
+        expect(goalRunSpy).toHaveBeenCalledWith({
+            threadId: "session-id",
+            objective: "Ship the migration and keep tests green",
+            status: "active",
+        }, expect.any(Function));
+        expect(turnStartSpy).not.toHaveBeenCalled();
+    });
+
+    it('reports an unset goal when the goal slash command has no input', async () => {
+        const { mockFixture } = setupPromptFixture();
+        vi.spyOn(mockFixture.getCodexAcpClient(), "getThreadGoal").mockResolvedValue({goal: null});
+        const goalSetSpy = vi.spyOn(mockFixture.getCodexAppServerClient(), "threadGoalSet")
+            .mockResolvedValue({ goal: createThreadGoal() });
+        const goalClearSpy = vi.spyOn(mockFixture.getCodexAppServerClient(), "threadGoalClear")
+            .mockResolvedValue({ cleared: true });
+
+        await mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "/goal" }],
+        });
+
+        expect(goalSetSpy).not.toHaveBeenCalled();
+        expect(goalClearSpy).not.toHaveBeenCalled();
+        const [event] = mockFixture.getAcpConnectionEvents([]);
+        expect(event).toBeDefined();
+        expect(event!.args[0].update.content.text).toBe(
+            "Usage: /goal <objective>\nNo goal is currently set."
+        );
+    });
+    it('returns cancelled promptly when non-interruptible slash command startup is cancelled', async () => {
+        const { mockFixture } = setupPromptFixture();
+        const compactStartSpy = vi.spyOn(mockFixture.getCodexAppServerClient(), "threadCompactStart")
+            .mockResolvedValue({});
+        const controller = new AbortController();
+
+        const promptPromise = mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "/compact" }],
+        }, controller.signal);
+
+        await vi.waitFor(() => {
+            expect(compactStartSpy).toHaveBeenCalledWith({ threadId: "session-id" });
+        });
+
+        controller.abort();
+        await expect(promptPromise).resolves.toMatchObject({stopReason: "cancelled"});
+
+        mockFixture.sendServerNotification({
+            method: "thread/compacted",
+            params: { threadId: "session-id", turnId: "compact-turn-id" },
+        });
+        await flushAsyncWork();
+    });
+
     it('reports missing review slash command input', async () => {
         const { mockFixture } = setupPromptFixture();
         const reviewStartSpy = vi.spyOn(mockFixture.getCodexAppServerClient(), "reviewStart")
@@ -1181,6 +2672,176 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         const prompt: acp.ContentBlock[] = [{ type: "text", text: "/logout " }];
         await codexAcpAgent.prompt({sessionId: newSessionResponse.sessionId, prompt: prompt });
         await expect(fixture.getAcpConnectionDump(["sessionId"])).toMatchFileSnapshot("data/command-logout.json");
+    });
+
+    it('clears active session auth state when logout command signs out', async () => {
+        const mockFixture = createCodexMockTestFixture();
+        const codexAcpAgent = mockFixture.getCodexAcpAgent();
+        const codexAcpClient = mockFixture.getCodexAcpClient();
+        const model = createTestModel();
+        const currentModelId = ModelId.create(model.id, model.defaultReasoningEffort).toString();
+
+        vi.spyOn(codexAcpClient, "authRequired").mockResolvedValue(false);
+        vi.spyOn(codexAcpClient, "getModelProvider").mockReturnValue("openai");
+        const getAccountSpy = vi.spyOn(codexAcpClient, "getAccount")
+            .mockResolvedValueOnce({
+                account: { type: "apiKey" },
+                requiresOpenaiAuth: false,
+            })
+            .mockResolvedValueOnce({
+                account: { type: "apiKey" },
+                requiresOpenaiAuth: false,
+            })
+            .mockResolvedValueOnce({
+                account: null,
+                requiresOpenaiAuth: true,
+            })
+            .mockResolvedValueOnce({
+                account: { type: "apiKey" },
+                requiresOpenaiAuth: false,
+            });
+        vi.spyOn(codexAcpClient, "newSession")
+            .mockResolvedValueOnce({
+                sessionId: "session-1",
+                currentModelId,
+                models: [model],
+                additionalDirectories: [],
+            })
+            .mockResolvedValueOnce({
+                sessionId: "session-2",
+                currentModelId,
+                models: [model],
+                additionalDirectories: [],
+            });
+        const logoutSpy = vi.spyOn(codexAcpClient, "logout").mockResolvedValue();
+        const authenticateSpy = vi.spyOn(codexAcpClient, "authenticate").mockResolvedValue(true);
+
+        const session1 = await codexAcpAgent.newSession({cwd: "/workspace", mcpServers: []});
+        const session2 = await codexAcpAgent.newSession({cwd: "/workspace", mcpServers: []});
+        expect(codexAcpAgent.getSessionState(session1.sessionId).authConfigured).toBe(true);
+        expect(codexAcpAgent.getSessionState(session2.sessionId).authConfigured).toBe(true);
+
+        await codexAcpAgent.prompt({
+            sessionId: session1.sessionId,
+            prompt: [{ type: "text", text: "/logout" }],
+        });
+
+        expect(logoutSpy).toHaveBeenCalledOnce();
+        expect(getAccountSpy).toHaveBeenCalledTimes(3);
+        expect(codexAcpAgent.getSessionState(session1.sessionId)).toMatchObject({
+            account: null,
+            authConfigured: false,
+        });
+        expect(codexAcpAgent.getSessionState(session2.sessionId)).toMatchObject({
+            account: null,
+            authConfigured: false,
+        });
+
+        await codexAcpAgent.authenticate({methodId: "api-key"});
+
+        expect(authenticateSpy).toHaveBeenCalledWith({methodId: "api-key"});
+        expect(getAccountSpy).toHaveBeenCalledTimes(4);
+        expect(codexAcpAgent.getSessionState(session1.sessionId)).toMatchObject({
+            account: { type: "apiKey" },
+            authConfigured: true,
+        });
+        expect(codexAcpAgent.getSessionState(session2.sessionId)).toMatchObject({
+            account: { type: "apiKey" },
+            authConfigured: true,
+        });
+    });
+
+    it('does not overwrite OpenAI session auth state when gateway auth succeeds', async () => {
+        const mockFixture = createCodexMockTestFixture();
+        const codexAcpAgent = mockFixture.getCodexAcpAgent();
+        const codexAcpClient = mockFixture.getCodexAcpClient();
+        const model = createTestModel();
+        const currentModelId = ModelId.create(model.id, model.defaultReasoningEffort).toString();
+
+        vi.spyOn(codexAcpClient, "authRequired").mockResolvedValue(false);
+        vi.spyOn(codexAcpClient, "getModelProvider").mockReturnValue(null);
+        const getAccountSpy = vi.spyOn(codexAcpClient, "getAccount")
+            .mockResolvedValue({
+                account: { type: "apiKey" },
+                requiresOpenaiAuth: false,
+            });
+        vi.spyOn(codexAcpClient, "newSession").mockResolvedValue({
+            sessionId: "openai-session",
+            currentModelId,
+            models: [model],
+            modelProvider: "openai",
+            additionalDirectories: [],
+        });
+        const authenticateSpy = vi.spyOn(codexAcpClient, "authenticate").mockResolvedValue(true);
+
+        const session = await codexAcpAgent.newSession({cwd: "/workspace", mcpServers: []});
+        expect(codexAcpAgent.getSessionState(session.sessionId)).toMatchObject({
+            account: { type: "apiKey" },
+            authConfigured: true,
+            authProvider: "openai",
+        });
+
+        const gatewayAuthRequest: CodexAuthRequest = {
+            methodId: "gateway",
+            _meta: {
+                "gateway": {
+                    baseUrl: "https://www.example.com",
+                    headers: {
+                        "Custom-Auth-Header": "TOKEN",
+                    },
+                },
+            },
+        };
+        await codexAcpAgent.authenticate(gatewayAuthRequest);
+
+        expect(authenticateSpy).toHaveBeenCalledWith(gatewayAuthRequest);
+        expect(getAccountSpy).toHaveBeenCalledTimes(1);
+        expect(codexAcpAgent.getSessionState(session.sessionId)).toMatchObject({
+            account: { type: "apiKey" },
+            authConfigured: true,
+            authProvider: "openai",
+        });
+    });
+
+    it('keeps custom provider sessions auth configured without account state', async () => {
+        const mockFixture = createCodexMockTestFixture();
+        const codexAcpAgent = mockFixture.getCodexAcpAgent();
+        const codexAcpClient = mockFixture.getCodexAcpClient();
+        const model = createTestModel();
+        const currentModelId = ModelId.create(model.id, model.defaultReasoningEffort).toString();
+
+        vi.spyOn(codexAcpClient, "authRequired").mockResolvedValue(false);
+        vi.spyOn(codexAcpClient, "getModelProvider").mockReturnValue("custom-provider");
+        const getAccountSpy = vi.spyOn(codexAcpClient, "getAccount")
+            .mockResolvedValue({
+                account: null,
+                requiresOpenaiAuth: true,
+            });
+        vi.spyOn(codexAcpClient, "newSession").mockResolvedValue({
+            sessionId: "custom-provider-session",
+            currentModelId,
+            models: [model],
+            additionalDirectories: [],
+        });
+        const logoutSpy = vi.spyOn(codexAcpClient, "logout").mockResolvedValue();
+
+        const session = await codexAcpAgent.newSession({cwd: "/workspace", mcpServers: []});
+        expect(codexAcpAgent.getSessionState(session.sessionId)).toMatchObject({
+            account: null,
+            authConfigured: true,
+        });
+
+        await codexAcpAgent.prompt({
+            sessionId: session.sessionId,
+            prompt: [{ type: "text", text: "/logout" }],
+        });
+
+        expect(logoutSpy).toHaveBeenCalledOnce();
+        expect(getAccountSpy).not.toHaveBeenCalled();
+        expect(codexAcpAgent.getSessionState(session.sessionId)).toMatchObject({
+            account: null,
+            authConfigured: true,
+        });
     });
 
     it('handles skills command', async () => {
@@ -1320,6 +2981,16 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         expect(result).toEqual(ModelId.create('5.2-codex', 'medium'));
     });
 
+    it('should keep a model id that is not in the advertised catalog (custom provider)', () => {
+        const result = fixture.getCodexAcpClient().createModelId(mockModels, 'MiniMax-M3', 'high');
+        expect(result).toEqual(ModelId.create('MiniMax-M3', 'high'));
+    });
+
+    it('should default the effort for an uncatalogued model when reasoningEffort is null', () => {
+        const result = fixture.getCodexAcpClient().createModelId(mockModels, 'MiniMax-M3', null);
+        expect(result).toEqual(ModelId.create('MiniMax-M3', 'medium'));
+    });
+
     /**
      * Sets up a mock fixture with turnStart/awaitTurnCompleted spied on,
      * and a given session state. Returns the fixture and turnStart spy.
@@ -1356,11 +3027,14 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         return { mockFixture, sessionState, turnStartSpy };
     }
 
-    function createReviewStartResponse(): ReviewStartResponse {
+    function createReviewStartResponse(
+        reviewThreadId: string = "session-id",
+        turnId: string = "review-turn-id",
+    ): ReviewStartResponse {
         return {
-            reviewThreadId: "session-id",
+            reviewThreadId,
             turn: {
-                id: "review-turn-id",
+                id: turnId,
                 items: [],
                 itemsView: "notLoaded",
                 status: "inProgress",
@@ -1391,13 +3065,13 @@ describe('ACP server test', { timeout: 40_000 }, () => {
     function createThreadGoal(overrides?: Partial<ThreadGoal>): ThreadGoal {
         return {
             threadId: "session-id",
-            objective: "Ship goal support",
+            objective: "Ship the migration and keep tests green",
             status: "active",
-            tokenBudget: 1000,
-            tokensUsed: 42,
-            timeUsedSeconds: 12,
+            tokenBudget: null,
+            tokensUsed: 0,
+            timeUsedSeconds: 0,
             createdAt: 1710000000,
-            updatedAt: 1710000012,
+            updatedAt: 1710000000,
             ...overrides,
         };
     }

@@ -26,10 +26,15 @@ import type {
     SkillsExtraRootsSetParams,
     SkillsListParams,
     SkillsListResponse,
+    ThreadGoal,
+    ThreadGoalUpdatedNotification,
+    ThreadStatus,
+    ThreadStatusChangedNotification,
     ThreadArchiveParams,
     ThreadArchiveResponse,
     ThreadCompactStartParams,
     ThreadCompactStartResponse,
+    ThreadGoalClearedNotification,
     ThreadGoalClearParams,
     ThreadGoalClearResponse,
     ThreadGoalGetParams,
@@ -107,6 +112,8 @@ const McpServerElicitationRequest = new RequestType<
     void
 >('mcpServer/elicitation/request');
 
+const GOAL_RUNTIME_EFFECTS_GRACE_MS = 1_000;
+
 /**
  * A type-safe client over the Codex App Server's JSON-RPC API.
  * Maps each request to its expected response and exposes clear, typed methods for supported JSON-RPC operations.
@@ -121,6 +128,10 @@ export class CodexAppServerClient {
     private readonly pendingTurnCompletionResolvers = new Map<string, Map<string, (event: TurnCompletedNotification) => void>>();
     private readonly pendingCompactionCompletionResolvers = new Map<string, Set<(event: CompactionCompletedNotification) => void>>();
     private readonly turnCompletionCaptures = new Map<string, Set<(event: TurnCompletedNotification) => void>>();
+    private readonly turnRoutingCaptures = new Map<string, Set<(turnId: string) => void>>();
+    private readonly threadStatusCaptures = new Map<string, Set<(status: ThreadStatus) => void>>();
+    private readonly threadGoalUpdateCaptures = new Map<string, Set<(event: ThreadGoalUpdatedNotification) => void>>();
+    private readonly threadGoalClearedCaptures = new Map<string, Set<() => void>>();
     private readonly staleTurnIds = new Map<string, Set<string>>();
 
     constructor(connection: MessageConnection) {
@@ -142,15 +153,21 @@ export class CodexAppServerClient {
             if (isCompactionCompletedNotification(serverNotification)) {
                 this.recordCompactionCompleted(serverNotification);
             }
+            if (isThreadStatusChangedNotification(serverNotification)) {
+                this.recordThreadStatusChanged(serverNotification.params);
+            }
+            if (isThreadGoalUpdatedNotification(serverNotification)) {
+                this.recordThreadGoalUpdated(serverNotification.params);
+            }
+            if (isThreadGoalClearedNotification(serverNotification)) {
+                this.recordThreadGoalCleared(serverNotification.params);
+            }
             const routing = extractTurnRouting(serverNotification);
-            const staleTurnNotification = this.isStaleTurn(routing.threadId, routing.turnId);
-            if (staleTurnNotification) {
-                if (isTurnCompletedNotification(serverNotification) && routing.threadId !== null && routing.turnId !== null) {
-                    this.clearStaleTurn(routing.threadId, routing.turnId);
-                }
-                for (const callback of this.codexEventHandlers) {
-                    callback({ eventType: "notification", ...serverNotification });
-                }
+            if (this.handleStaleTurnNotification(serverNotification, routing)) {
+                return;
+            }
+            this.recordTurnRouting(routing);
+            if (this.handleStaleTurnNotification(serverNotification, routing)) {
                 return;
             }
             this.notify(serverNotification);
@@ -248,7 +265,10 @@ export class CodexAppServerClient {
         }
     }
 
-    async runReview(params: ReviewStartParams, onTurnStarted?: (turnId: string) => void): Promise<TurnCompletedNotification> {
+    async runReview(
+        params: ReviewStartParams,
+        onTurnStarted?: (turnId: string, threadId: string) => void,
+    ): Promise<TurnCompletedNotification> {
         const capturedCompletions: Array<TurnCompletedNotification> = [];
         const releaseCapture = this.captureTurnCompletions(params.threadId, (event) => {
             capturedCompletions.push(event);
@@ -256,7 +276,7 @@ export class CodexAppServerClient {
 
         try {
             const reviewStarted = await this.reviewStart(params);
-            onTurnStarted?.(reviewStarted.turn.id);
+            onTurnStarted?.(reviewStarted.turn.id, reviewStarted.reviewThreadId);
             const earlyCompletion = capturedCompletions.find(event => event.turn.id === reviewStarted.turn.id);
             releaseCapture();
             if (earlyCompletion) {
@@ -266,6 +286,185 @@ export class CodexAppServerClient {
         } finally {
             releaseCapture();
         }
+    }
+
+    async runGoalSet(
+        params: ThreadGoalSetParams,
+        onTurnStarted?: (turnId: string) => void,
+        runtimeEffectsGraceMs = GOAL_RUNTIME_EFFECTS_GRACE_MS,
+    ): Promise<TurnCompletedNotification | null> {
+        let goalTurnId: string | null = null;
+        const capturedCompletions: Array<TurnCompletedNotification> = [];
+        let resolveGoalTurnCompleted: (event: TurnCompletedNotification) => void = () => {};
+        const goalTurnCompleted = new Promise<TurnCompletedNotification>((resolve) => {
+            resolveGoalTurnCompleted = resolve;
+        });
+        const releaseCompletionCapture = this.captureTurnCompletions(params.threadId, (event) => {
+            capturedCompletions.push(event);
+            if (goalTurnId === event.turn.id) {
+                resolveGoalTurnCompleted(event);
+            }
+        });
+        let resolveGoalTurnStarted: (turnId: string) => void = () => {};
+        const goalTurnStarted = new Promise<string>((resolve) => {
+            resolveGoalTurnStarted = resolve;
+        });
+        let resolveGoalUpdateHandled: () => void = () => {};
+        const matchingGoalUpdateHandled = new Promise<null>((resolve) => {
+            resolveGoalUpdateHandled = () => resolve(null);
+        });
+        let goalUpdateHandled = false;
+        let expectedGoal: ThreadGoal | null = null;
+        const noGoalTurnStarted = this.createNoGoalTurnStartedPromise(runtimeEffectsGraceMs);
+        const capturedGoalUpdates: Array<ThreadGoalUpdatedNotification> = [];
+        const releaseRoutingCapture = this.captureTurnRoutings(params.threadId, (turnId) => {
+            if (!goalUpdateHandled || goalTurnId !== null) {
+                return;
+            }
+            goalTurnId = turnId;
+            onTurnStarted?.(turnId);
+            resolveGoalTurnStarted(turnId);
+        });
+        const releaseGoalUpdateCapture = this.captureThreadGoalUpdates(params.threadId, (event) => {
+            capturedGoalUpdates.push(event);
+            if (expectedGoal !== null && goalsMatch(event.goal, expectedGoal)) {
+                goalUpdateHandled = true;
+                resolveGoalUpdateHandled();
+                noGoalTurnStarted.goalUpdated();
+            }
+        });
+        const releaseStatusCapture = this.captureThreadStatuses(params.threadId, (status) => {
+            if (!goalUpdateHandled || goalTurnId !== null) {
+                return;
+            }
+            noGoalTurnStarted.threadStatusChanged(status);
+        });
+
+        try {
+            const goalSetResponse = await this.threadGoalSet(params);
+            expectedGoal = goalSetResponse.goal;
+            if (capturedGoalUpdates.some(event => goalsMatch(event.goal, expectedGoal!))) {
+                goalUpdateHandled = true;
+                resolveGoalUpdateHandled();
+                noGoalTurnStarted.goalUpdated();
+            }
+            if (expectedGoal.status !== "active") {
+                await matchingGoalUpdateHandled;
+                return null;
+            }
+            const turnId = goalTurnId ?? await Promise.race([goalTurnStarted, noGoalTurnStarted.promise]);
+            noGoalTurnStarted.release();
+            releaseRoutingCapture();
+            releaseStatusCapture();
+            releaseGoalUpdateCapture();
+            if (turnId === null) {
+                return null;
+            }
+            const earlyCompletion = capturedCompletions.find(event => event.turn.id === turnId);
+            if (earlyCompletion) {
+                return earlyCompletion;
+            }
+            return await goalTurnCompleted;
+        } finally {
+            noGoalTurnStarted.release();
+            releaseCompletionCapture();
+            releaseRoutingCapture();
+            releaseStatusCapture();
+            releaseGoalUpdateCapture();
+        }
+    }
+
+    async runGoalClear(params: ThreadGoalClearParams): Promise<void> {
+        let goalClearedHandled = false;
+        let resolveGoalClearedHandled: () => void = () => {};
+        const matchingGoalClearedHandled = new Promise<void>((resolve) => {
+            resolveGoalClearedHandled = () => resolve();
+        });
+        const releaseGoalClearedCapture = this.captureThreadGoalClears(params.threadId, () => {
+            goalClearedHandled = true;
+            resolveGoalClearedHandled();
+        });
+
+        try {
+            const response = await this.threadGoalClear(params);
+            if (!response.cleared || goalClearedHandled) {
+                return;
+            }
+            await matchingGoalClearedHandled;
+        } finally {
+            releaseGoalClearedCapture();
+        }
+    }
+
+    private createNoGoalTurnStartedPromise(
+        runtimeEffectsGraceMs: number,
+    ): {
+        promise: Promise<null>,
+        release: () => void,
+        goalUpdated: () => void,
+        threadStatusChanged: (status: ThreadStatus) => void,
+    } {
+        let released = false;
+        let resolved = false;
+        let goalUpdated = false;
+        let activeAfterGoalUpdate = false;
+        let timeout: ReturnType<typeof setTimeout> | null = null;
+        let resolveNoGoalTurnStarted: () => void = () => {};
+        const clearTimer = () => {
+            if (timeout !== null) {
+                clearTimeout(timeout);
+                timeout = null;
+            }
+        };
+        const resolveNoTurn = () => {
+            if (released || resolved) {
+                return;
+            }
+            resolved = true;
+            clearTimer();
+            resolveNoGoalTurnStarted();
+        };
+        const scheduleNoTurnTimer = () => {
+            if (released || resolved || !goalUpdated || activeAfterGoalUpdate || timeout !== null) {
+                return;
+            }
+            timeout = setTimeout(resolveNoTurn, runtimeEffectsGraceMs);
+        };
+        const release = () => {
+            if (released) {
+                return;
+            }
+            released = true;
+            clearTimer();
+        };
+        const promise = new Promise<null>((resolve) => {
+            resolveNoGoalTurnStarted = () => {
+                resolve(null);
+            };
+        });
+        const handleGoalUpdated = () => {
+            goalUpdated = true;
+            scheduleNoTurnTimer();
+        };
+        const handleThreadStatusChanged = (status: ThreadStatus) => {
+            if (!goalUpdated || released || resolved) {
+                return;
+            }
+            if (status.type === "active") {
+                activeAfterGoalUpdate = true;
+                clearTimer();
+                return;
+            }
+            if (activeAfterGoalUpdate) {
+                resolveNoTurn();
+            }
+        };
+        return {
+            promise,
+            release,
+            goalUpdated: handleGoalUpdated,
+            threadStatusChanged: handleThreadStatusChanged,
+        };
     }
 
     async runCompact(params: ThreadCompactStartParams): Promise<CompactionCompletedNotification> {
@@ -484,6 +683,65 @@ export class CodexAppServerClient {
         }
     }
 
+    private recordThreadStatusChanged(event: ThreadStatusChangedNotification): void {
+        const captures = this.threadStatusCaptures.get(event.threadId);
+        if (!captures) {
+            return;
+        }
+        for (const capture of captures) {
+            capture(event.status);
+        }
+    }
+
+    private recordThreadGoalUpdated(event: ThreadGoalUpdatedNotification): void {
+        const captures = this.threadGoalUpdateCaptures.get(event.threadId);
+        if (!captures) {
+            return;
+        }
+        for (const capture of captures) {
+            capture(event);
+        }
+    }
+
+    private recordThreadGoalCleared(event: ThreadGoalClearedNotification): void {
+        const captures = this.threadGoalClearedCaptures.get(event.threadId);
+        if (!captures) {
+            return;
+        }
+        for (const capture of captures) {
+            capture();
+        }
+    }
+
+    private recordTurnRouting(routing: { threadId: string | null, turnId: string | null }): void {
+        if (routing.threadId === null || routing.turnId === null) {
+            return;
+        }
+        const captures = this.turnRoutingCaptures.get(routing.threadId);
+        if (!captures) {
+            return;
+        }
+        for (const capture of captures) {
+            capture(routing.turnId);
+        }
+    }
+
+    private handleStaleTurnNotification(
+        notification: ServerNotification,
+        routing: { threadId: string | null, turnId: string | null },
+    ): boolean {
+        if (!this.isStaleTurn(routing.threadId, routing.turnId)) {
+            return false;
+        }
+        if (isTurnCompletedNotification(notification) && routing.threadId !== null && routing.turnId !== null) {
+            this.clearStaleTurn(routing.threadId, routing.turnId);
+        }
+        for (const callback of this.codexEventHandlers) {
+            callback({ eventType: "notification", ...notification });
+        }
+        return true;
+    }
+
     private isStaleTurn(threadId: string | null, turnId: string | null): boolean {
         if (threadId === null || turnId === null) {
             return false;
@@ -525,6 +783,74 @@ export class CodexAppServerClient {
             captures.delete(capture);
             if (captures.size === 0) {
                 this.turnCompletionCaptures.delete(threadId);
+            }
+        };
+    }
+
+    private captureTurnRoutings(threadId: string, capture: (turnId: string) => void): () => void {
+        const captures = this.turnRoutingCaptures.get(threadId) ?? new Set<(turnId: string) => void>();
+        captures.add(capture);
+        this.turnRoutingCaptures.set(threadId, captures);
+        let released = false;
+        return () => {
+            if (released) {
+                return;
+            }
+            released = true;
+            captures.delete(capture);
+            if (captures.size === 0) {
+                this.turnRoutingCaptures.delete(threadId);
+            }
+        };
+    }
+
+    private captureThreadStatuses(threadId: string, capture: (status: ThreadStatus) => void): () => void {
+        const captures = this.threadStatusCaptures.get(threadId) ?? new Set<(status: ThreadStatus) => void>();
+        captures.add(capture);
+        this.threadStatusCaptures.set(threadId, captures);
+        let released = false;
+        return () => {
+            if (released) {
+                return;
+            }
+            released = true;
+            captures.delete(capture);
+            if (captures.size === 0) {
+                this.threadStatusCaptures.delete(threadId);
+            }
+        };
+    }
+
+    private captureThreadGoalUpdates(threadId: string, capture: (event: ThreadGoalUpdatedNotification) => void): () => void {
+        const captures = this.threadGoalUpdateCaptures.get(threadId) ?? new Set<(event: ThreadGoalUpdatedNotification) => void>();
+        captures.add(capture);
+        this.threadGoalUpdateCaptures.set(threadId, captures);
+        let released = false;
+        return () => {
+            if (released) {
+                return;
+            }
+            released = true;
+            captures.delete(capture);
+            if (captures.size === 0) {
+                this.threadGoalUpdateCaptures.delete(threadId);
+            }
+        };
+    }
+
+    private captureThreadGoalClears(threadId: string, capture: () => void): () => void {
+        const captures = this.threadGoalClearedCaptures.get(threadId) ?? new Set<() => void>();
+        captures.add(capture);
+        this.threadGoalClearedCaptures.set(threadId, captures);
+        let released = false;
+        return () => {
+            if (released) {
+                return;
+            }
+            released = true;
+            captures.delete(capture);
+            if (captures.size === 0) {
+                this.threadGoalClearedCaptures.delete(threadId);
             }
         };
     }
@@ -633,11 +959,40 @@ function isTurnCompletedNotification(notification: ServerNotification): notifica
     return notification.method === "turn/completed";
 }
 
+function isThreadStatusChangedNotification(notification: ServerNotification): notification is {
+    method: "thread/status/changed";
+    params: ThreadStatusChangedNotification;
+} {
+    return notification.method === "thread/status/changed";
+}
+
+function isThreadGoalUpdatedNotification(notification: ServerNotification): notification is {
+    method: "thread/goal/updated";
+    params: ThreadGoalUpdatedNotification;
+} {
+    return notification.method === "thread/goal/updated";
+}
+
+function isThreadGoalClearedNotification(notification: ServerNotification): notification is {
+    method: "thread/goal/cleared";
+    params: ThreadGoalClearedNotification;
+} {
+    return notification.method === "thread/goal/cleared";
+}
+
 function isCompactionCompletedNotification(notification: ServerNotification): notification is CompactionCompletedNotification {
     if (notification.method === "thread/compacted") {
         return true;
     }
     return notification.method === "item/completed" && notification.params.item.type === "contextCompaction";
+}
+
+function goalsMatch(left: ThreadGoal, right: ThreadGoal): boolean {
+    return left.threadId === right.threadId
+        && left.objective === right.objective
+        && left.status === right.status
+        && left.tokenBudget === right.tokenBudget
+        && left.updatedAt === right.updatedAt;
 }
 
 function extractThreadId(notification: ServerNotification): string | null {

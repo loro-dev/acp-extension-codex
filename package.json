@@ -18,18 +18,20 @@
   "scripts": {
     "prepublishOnly": "npm run build",
     "build": "node build.mjs",
-    "bundle:all": "npm run bundle:linux-x64 && npm run bundle:linux-arm64 && npm run bundle:darwin-x64 && npm run bundle:darwin-arm64 && npm run bundle:win-x64",
+    "bundle:all": "npm run bundle:linux-x64 && npm run bundle:linux-arm64 && npm run bundle:darwin-x64 && npm run bundle:darwin-arm64 && npm run bundle:win-x64 && npm run bundle:win-arm64",
     "bundle:linux-x64": "bun build src/index.ts --minify --sourcemap --compile --target=bun-linux-x64-baseline --outfile dist/bin/acp-extension-codex-x64-linux",
     "bundle:linux-arm64": "bun build src/index.ts --minify --sourcemap --compile --target=bun-linux-arm64 --outfile dist/bin/acp-extension-codex-arm64-linux",
     "bundle:darwin-x64": "bun build src/index.ts --minify --sourcemap --compile --target=bun-darwin-x64-baseline --outfile dist/bin/acp-extension-codex-x64-darwin",
     "bundle:darwin-arm64": "bun build src/index.ts --minify --sourcemap --compile --target=bun-darwin-arm64 --outfile dist/bin/acp-extension-codex-arm64-darwin",
     "bundle:win-x64": "bun build src/index.ts --minify --sourcemap --compile --target=bun-windows-x64-baseline --outfile dist/bin/acp-extension-codex-x64-windows.exe",
-    "package:all": "npm run package:linux-x64 && npm run package:linux-arm64 && npm run package:darwin-x64 && npm run package:darwin-arm64 && npm run package:win-x64",
+    "bundle:win-arm64": "bun build src/index.ts --minify --sourcemap --compile --target=bun-windows-arm64 --outfile dist/bin/acp-extension-codex-arm64-windows.exe",
+    "package:all": "npm run package:linux-x64 && npm run package:linux-arm64 && npm run package:darwin-x64 && npm run package:darwin-arm64 && npm run package:win-x64 && npm run package:win-arm64",
     "package:linux-x64": "cd dist/bin && zip acp-extension-codex-x64-linux.zip acp-extension-codex-x64-linux",
     "package:linux-arm64": "cd dist/bin && zip acp-extension-codex-arm64-linux.zip acp-extension-codex-arm64-linux",
     "package:darwin-x64": "cd dist/bin && zip acp-extension-codex-x64-darwin.zip acp-extension-codex-x64-darwin",
     "package:darwin-arm64": "cd dist/bin && zip acp-extension-codex-arm64-darwin.zip acp-extension-codex-arm64-darwin",
     "package:win-x64": "cd dist/bin && zip acp-extension-codex-x64-windows.zip acp-extension-codex-x64-windows.exe",
+    "package:win-arm64": "cd dist/bin && zip acp-extension-codex-arm64-windows.zip acp-extension-codex-arm64-windows.exe",
     "start": "node --import tsx src/index.ts",
     "generate-types": "./node_modules/.bin/codex app-server generate-ts --out src/app-server",
     "test": "vitest run",
@@ -58,19 +60,19 @@
   "license": "Apache-2.0",
   "type": "module",
   "devDependencies": {
-    "@types/node": "^24.10.1",
+    "@types/node": "^26.1.0",
     "esbuild": "^0.28.1",
     "mcp-hello-world": "^1.1.2",
-    "tsx": "^4.20.6",
-    "typescript": "^5.9.3",
-    "vitest": "^4.0.10"
+    "tsx": "^4.23.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "^0.28.1",
-    "@openai/codex": "^0.142.0",
-    "diff": "^8.0.3",
+    "@agentclientprotocol/sdk": "^1.2.1",
+    "@openai/codex": "^0.144.0",
+    "diff": "^9.0.0",
     "open": "^11.0.0",
-    "vscode-jsonrpc": "^8.2.1",
+    "vscode-jsonrpc": "^9.0.1",
     "zod": "^4.0.0"
   }
 }

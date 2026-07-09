@@ -89,7 +89,7 @@ async function editFileDirectly(
         sessionId,
         prompt: [{
             type: "text",
-            text: `Create ${filePath} by editing files directly. Content must be exactly: ${FILE_CONTENT}. Do not use shell commands.`,
+            text: `Create ${filePath} by editing files directly. Content must be exactly: '${FILE_CONTENT}'. Do not use shell commands.`,
         }],
     });
     if (expectSuccess) {

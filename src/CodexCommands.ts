@@ -2,11 +2,19 @@ import type * as acp from "@agentclientprotocol/sdk";
 import type {AvailableCommand} from "@agentclientprotocol/sdk";
 import {ACPSessionConnection, type AcpClientConnection} from "./ACPSessionConnection";
 import type {CodexAcpClient} from "./CodexAcpClient";
-import type {RateLimitSnapshot, ReviewTarget, ThreadGoal, TurnCompletedNotification} from "./app-server/v2";
+import type {
+    RateLimitSnapshot,
+    ReviewTarget,
+    SkillsListEntry,
+    SkillsListParams,
+    ThreadGoal,
+    TurnCompletedNotification,
+} from "./app-server/v2";
 import type {SessionState} from "./CodexAcpServer";
 import type {RateLimitsMap} from "./RateLimitsMap";
 import type {TokenCount} from "./TokenCount";
 import {logger} from "./Logger";
+import {createAgentTextMessageChunk} from "./ContentChunks";
 
 type ParsedSlashCommand = {
     name: string;
@@ -17,43 +25,73 @@ export type CommandHandleResult =
     | { handled: false }
     | { handled: true, turnCompleted?: TurnCompletedNotification };
 
+export type CommandHandleOptions = {
+    onTurnStartPending?: () => void;
+    onTurnStarted?: (turnId: string, threadId: string) => void;
+};
+
+export type LogoutHandler = () => void | Promise<void>;
+
 export class CodexCommands {
     private readonly connection: AcpClientConnection;
     private readonly codexAcpClient: CodexAcpClient;
     private readonly runWithProcessCheck: <T>(operation: () => Promise<T>) => Promise<T>;
+    private readonly onLogout: LogoutHandler;
 
     constructor(
         connection: AcpClientConnection,
         codexAcpClient: CodexAcpClient,
-        runWithProcessCheck: <T>(operation: () => Promise<T>) => Promise<T>
+        runWithProcessCheck: <T>(operation: () => Promise<T>) => Promise<T>,
+        onLogout: LogoutHandler = () => {}
     ) {
         this.connection = connection;
         this.codexAcpClient = codexAcpClient;
         this.runWithProcessCheck = runWithProcessCheck;
+        this.onLogout = onLogout;
     }
 
-    async publish(sessionId: string): Promise<void> {
+    async publish(sessionState: SessionState): Promise<void> {
         try {
-            const availableCommands = this.buildAvailableCommands();
+            const skillsResponse = await this.runWithProcessCheck(() => this.codexAcpClient.listSkills(this.createSkillsListParams(sessionState)));
+            const availableCommands = this.buildAvailableCommands(skillsResponse?.data ?? []);
             if (availableCommands.length === 0) {
                 return;
             }
 
-            const session = new ACPSessionConnection(this.connection, sessionId);
+            const session = new ACPSessionConnection(this.connection, sessionState.sessionId);
             await session.update({
                 sessionUpdate: "available_commands_update",
                 availableCommands
             });
         } catch (err) {
-            logger.error(`Failed to publish available commands for session ${sessionId}`, err);
+            logger.error(`Failed to publish available commands for session ${sessionState.sessionId}`, err);
         }
     }
 
-    private buildAvailableCommands(): AvailableCommand[] {
+    private createSkillsListParams(sessionState: SessionState): SkillsListParams {
+        return {
+            cwds: [sessionState.cwd, ...sessionState.additionalDirectories],
+        };
+    }
+
+    private buildAvailableCommands(skillsEntries: SkillsListEntry[]): AvailableCommand[] {
         const commands = new Map<string, AvailableCommand>();
 
         for (const builtin of this.getBuiltinCommands()) {
             commands.set(builtin.name, builtin);
+        }
+
+        for (const entry of skillsEntries) {
+            for (const skill of entry.skills) {
+                const name = `$${skill.name}`;
+                if (commands.has(name)) continue;
+                const description = skill.shortDescription ?? skill.description ?? skill.name;
+                commands.set(name, {
+                    name,
+                    description,
+                    input: null,
+                });
+            }
         }
 
         return Array.from(commands.values());
@@ -131,7 +169,11 @@ export class CodexCommands {
         };
     }
 
-    async tryHandleCommand(prompt: acp.ContentBlock[], sessionState: SessionState): Promise<CommandHandleResult> {
+    async tryHandleCommand(
+        prompt: acp.ContentBlock[],
+        sessionState: SessionState,
+        options: CommandHandleOptions = {},
+    ): Promise<CommandHandleResult> {
         const command = this.parseCommand(prompt);
         if (command === null) return { handled: false };
         const commandName = command.name;
@@ -143,9 +185,12 @@ export class CodexCommands {
                 await this.runWithProcessCheck(() => this.codexAcpClient.runCompact(sessionId));
                 return { handled: true };
             }
+            case "goal": {
+                return await this.runGoalCommand(sessionState, command.rest, options);
+            }
             case "review": {
                 const target = this.buildReviewTarget(command.rest);
-                const turnCompleted = await this.runReviewCommand(sessionState, target);
+                const turnCompleted = await this.runReviewCommand(sessionState, target, options);
                 return { handled: true, turnCompleted };
             }
             case "review-branch": {
@@ -156,7 +201,7 @@ export class CodexCommands {
                 const turnCompleted = await this.runReviewCommand(sessionState, {
                     type: "baseBranch",
                     branch: command.rest,
-                });
+                }, options);
                 return { handled: true, turnCompleted };
             }
             case "review-commit": {
@@ -168,7 +213,7 @@ export class CodexCommands {
                     type: "commit",
                     sha: command.rest,
                     title: null,
-                });
+                }, options);
                 return { handled: true, turnCompleted };
             }
             case "status": {
@@ -176,17 +221,14 @@ export class CodexCommands {
                 await this.sendCommandMessage(message, sessionId);
                 return { handled: true };
             }
-            case "goal": {
-                await this.handleGoalCommand(command.rest, sessionId);
-                return { handled: true };
-            }
             case "logout": {
                 await this.runWithProcessCheck(() => this.codexAcpClient.logout());
+                await this.onLogout();
                 await this.sendCommandMessage("Logged out from Codex account.", sessionId);
                 return { handled: true };
             }
             case "skills": {
-                const response = await this.runWithProcessCheck(() => this.codexAcpClient.listSkills());
+                const response = await this.runWithProcessCheck(() => this.codexAcpClient.listSkills(this.createSkillsListParams(sessionState)));
                 const skills = (response?.data ?? []).flatMap(entry => entry.skills);
                 const lines = skills.map(skill => {
                     const description = skill.shortDescription ?? skill.description ?? "";
@@ -221,14 +263,91 @@ export class CodexCommands {
         }
     }
 
-    private async runReviewCommand(sessionState: SessionState, target: ReviewTarget): Promise<TurnCompletedNotification> {
+    private async runReviewCommand(
+        sessionState: SessionState,
+        target: ReviewTarget,
+        options: CommandHandleOptions,
+    ): Promise<TurnCompletedNotification> {
+        options.onTurnStartPending?.();
         return await this.runWithProcessCheck(() => this.codexAcpClient.runReview(
             sessionState.sessionId,
             target,
-            (turnId) => {
-                sessionState.currentTurnId = turnId;
+            (turnId, threadId) => {
+                this.handleCommandTurnStarted(sessionState, options, turnId, threadId);
             },
         ));
+    }
+
+    private async runGoalCommand(
+        sessionState: SessionState,
+        rest: string,
+        options: CommandHandleOptions,
+    ): Promise<CommandHandleResult> {
+        const sessionId = sessionState.sessionId;
+        const argument = rest.trim();
+        if (argument.length === 0) {
+            const response = await this.runWithProcessCheck(() => this.codexAcpClient.getThreadGoal({threadId: sessionId}));
+            const text = response.goal
+                ? this.formatThreadGoalSummary(response.goal)
+                : "Usage: /goal <objective>\nNo goal is currently set.";
+            await this.sendCommandMessage(text, sessionId);
+            return { handled: true };
+        }
+
+        switch (argument.toLowerCase()) {
+            case "pause":
+                await this.runWithProcessCheck(() => this.codexAcpClient.setGoalStatus(sessionId, "paused"));
+                return { handled: true };
+            case "resume":
+                options.onTurnStartPending?.();
+                return this.createGoalCommandResult(await this.runWithProcessCheck(() => this.codexAcpClient.resumeGoal(
+                    sessionId,
+                    (turnId) => {
+                        this.handleCommandTurnStarted(sessionState, options, turnId, sessionId);
+                    },
+                )));
+            case "clear":
+                await this.runWithProcessCheck(() => this.codexAcpClient.clearGoal(sessionId));
+                return { handled: true };
+        }
+
+        if (argument.length > 4000) {
+            const session = new ACPSessionConnection(this.connection, sessionId);
+            await session.update(createAgentTextMessageChunk('Command "/goal" requires goal text of at most 4000 characters.'));
+            return { handled: true };
+        }
+
+        options.onTurnStartPending?.();
+        return this.createGoalCommandResult(await this.runWithProcessCheck(() => this.codexAcpClient.setGoal(
+            sessionId,
+            argument,
+            (turnId) => {
+                this.handleCommandTurnStarted(sessionState, options, turnId, sessionId);
+            },
+        )));
+    }
+
+    private handleCommandTurnStarted(
+        sessionState: SessionState,
+        options: CommandHandleOptions,
+        turnId: string,
+        threadId: string,
+    ): void {
+        if (options.onTurnStarted) {
+            options.onTurnStarted(turnId, threadId);
+        } else {
+            sessionState.currentTurnId = turnId;
+        }
+    }
+
+    private createGoalCommandResult(turnCompleted: TurnCompletedNotification | null): CommandHandleResult {
+        if (turnCompleted === null) {
+            return { handled: true };
+        }
+        return {
+            handled: true,
+            turnCompleted,
+        };
     }
 
     private buildReviewTarget(instructions: string): ReviewTarget {
@@ -247,57 +366,7 @@ export class CodexCommands {
 
     private async sendCommandMessage(text: string, sessionId: string): Promise<void> {
         const session = new ACPSessionConnection(this.connection, sessionId);
-        await session.update({
-            sessionUpdate: "agent_message_chunk",
-            content: { type: "text", text }
-        });
-    }
-
-    private async handleGoalCommand(args: string, sessionId: string): Promise<void> {
-        const trimmed = args.trim();
-        switch (trimmed.toLowerCase()) {
-            case "": {
-                const response = await this.runWithProcessCheck(() => this.codexAcpClient.getThreadGoal({ threadId: sessionId }));
-                const text = response.goal
-                    ? this.formatThreadGoalSummary(response.goal)
-                    : "Usage: /goal <objective>\nNo goal is currently set.";
-                await this.sendCommandMessage(text, sessionId);
-                return;
-            }
-            case "clear": {
-                const response = await this.runWithProcessCheck(() => this.codexAcpClient.clearThreadGoal({ threadId: sessionId }));
-                if (!response.cleared) {
-                    await this.sendCommandMessage("No goal to clear. This thread does not currently have a goal.", sessionId);
-                }
-                return;
-            }
-            case "pause":
-                await this.handleGoalStatusCommand(sessionId, "paused");
-                return;
-            case "resume":
-                await this.handleGoalStatusCommand(sessionId, "active");
-                return;
-            default:
-                await this.runWithProcessCheck(() => this.codexAcpClient.setThreadGoal({
-                    threadId: sessionId,
-                    objective: trimmed,
-                    status: "active",
-                }));
-                return;
-        }
-    }
-
-    private async handleGoalStatusCommand(sessionId: string, status: "active" | "paused"): Promise<void> {
-        const response = await this.runWithProcessCheck(() => this.codexAcpClient.getThreadGoal({ threadId: sessionId }));
-        if (!response.goal) {
-            await this.sendCommandMessage("No goal is currently set. Use `/goal <objective>` to create one.", sessionId);
-            return;
-        }
-
-        await this.runWithProcessCheck(() => this.codexAcpClient.setThreadGoal({
-            threadId: sessionId,
-            status,
-        }));
+        await session.update(createAgentTextMessageChunk(text));
     }
 
     private async sendUnknownCommandMessage(name: string, sessionId: string): Promise<void> {

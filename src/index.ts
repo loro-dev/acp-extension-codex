@@ -92,7 +92,7 @@ function startAcpServer() {
         stderr = (stderr + data.toString()).slice(-maxStderrTailChars);
     });
 
-    process.stdin.on("close", (chunk: Buffer) => {
+    process.stdin.on("close", () => {
         codexConnection.process.stdin.end();
         // Kill the codex process if it doesn't exit naturally
         setTimeout(() => {
@@ -140,7 +140,7 @@ function startAcpServer() {
         .onRequest(acp.methods.agent.session.setConfigOption, (ctx) => getAgent().setSessionConfigOption(ctx.params))
         .onRequest(acp.methods.agent.authenticate, (ctx) => getAgent().authenticate(ctx.params))
         .onRequest(acp.methods.agent.logout, (ctx) => getAgent().logout(ctx.params))
-        .onRequest(acp.methods.agent.session.prompt, (ctx) => getAgent().prompt(ctx.params))
+        .onRequest(acp.methods.agent.session.prompt, (ctx) => getAgent().prompt(ctx.params, ctx.signal))
         .onNotification(acp.methods.agent.session.cancel, (ctx) => getAgent().cancel(ctx.params))
         .onRequest("authentication/status", emptyExtensionParamsParser, (ctx) => getAgent().extMethod("authentication/status", ctx.params))
         .onRequest("authentication/logout", emptyExtensionParamsParser, (ctx) => getAgent().extMethod("authentication/logout", ctx.params))

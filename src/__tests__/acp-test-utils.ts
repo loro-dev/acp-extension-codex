@@ -1,5 +1,5 @@
 import * as acp from "@agentclientprotocol/sdk";
-import type {McpServerStdio, RequestPermissionResponse} from "@agentclientprotocol/sdk";
+import type {CreateElicitationResponse, McpServerStdio, RequestPermissionResponse} from "@agentclientprotocol/sdk";
 import {CodexAcpClient} from '../CodexAcpClient';
 import {CodexAppServerClient, type CodexConnectionEvent} from '../CodexAppServerClient';
 import {startCodexConnection} from "../CodexJsonRpcConnection";
@@ -41,6 +41,12 @@ export function createSmartMock<T extends object>(
 function normalizeAcpConnectionEvent(event: MethodCallEvent): MethodCallEvent {
     if (event.method === "request" && event.args[0] === acp.methods.client.session.requestPermission) {
         return {method: "requestPermission", args: [event.args[1]]};
+    }
+    if (event.method === "request" && event.args[0] === acp.methods.client.elicitation.create) {
+        return {method: "createElicitation", args: [event.args[1]]};
+    }
+    if (event.method === "notify" && event.args[0] === acp.methods.client.elicitation.complete) {
+        return {method: "completeElicitation", args: [event.args[1]]};
     }
     if (event.method === "notify" && event.args[0] === acp.methods.client.session.update) {
         return {method: "sessionUpdate", args: [event.args[1]]};
@@ -238,6 +244,7 @@ export interface CodexMockTestFixture extends TestFixture {
     sendServerNotification(notification: ServerNotification | Record<string, unknown>): void,
     sendServerRequest<T>(method: string, params: unknown): Promise<T>,
     setPermissionResponse(response: RequestPermissionResponse): void,
+    setElicitationResponse(response: CreateElicitationResponse | Promise<CreateElicitationResponse>): void,
 }
 
 /**
@@ -254,6 +261,9 @@ export function createCodexMockTestFixture(): CodexMockTestFixture {
     // State for controlling permission responses
     const permissionState: { response: RequestPermissionResponse } = {
         response: { outcome: { outcome: 'cancelled' } }
+    };
+    const elicitationState: { response: CreateElicitationResponse | Promise<CreateElicitationResponse> } = {
+        response: { action: 'cancel' }
     };
 
     const mockCodexConnection = {
@@ -275,6 +285,9 @@ export function createCodexMockTestFixture(): CodexMockTestFixture {
     returnValues.set('request', (args) => {
         if (args[0] === acp.methods.client.session.requestPermission) {
             return permissionState.response;
+        }
+        if (args[0] === acp.methods.client.elicitation.create) {
+            return elicitationState.response;
         }
         return { mock: "Mocked return" };
     });
@@ -312,6 +325,9 @@ export function createCodexMockTestFixture(): CodexMockTestFixture {
         },
         setPermissionResponse(response: RequestPermissionResponse): void {
             permissionState.response = response;
+        },
+        setElicitationResponse(response: CreateElicitationResponse | Promise<CreateElicitationResponse>): void {
+            elicitationState.response = response;
         },
     };
 }
@@ -357,6 +373,8 @@ export function createTestSessionState(overrides?: Partial<SessionState>): Sessi
         modelContextWindow: null,
         rateLimits: null,
         account: null,
+        authConfigured: overrides?.account !== undefined ? overrides.account !== null : false,
+        authProvider: null,
         cwd: "/test/cwd",
         additionalDirectories: [],
         sessionId: "session-id",
