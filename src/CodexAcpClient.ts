@@ -33,12 +33,6 @@ import type {
     SkillsListParams,
     SkillsListResponse,
     SandboxPolicy,
-    ThreadGoalClearParams,
-    ThreadGoalClearResponse,
-    ThreadGoalGetParams,
-    ThreadGoalGetResponse,
-    ThreadGoalSetParams,
-    ThreadGoalSetResponse,
     Thread,
     ThreadGoalStatus,
     ThreadSourceKind,
@@ -240,18 +234,6 @@ export class CodexAcpClient {
 
     async getAccount(): Promise<GetAccountResponse> {
         return this.codexClient.accountRead({refreshToken: false});
-    }
-
-    async getThreadGoal(params: ThreadGoalGetParams): Promise<ThreadGoalGetResponse> {
-        return await this.codexClient.threadGoalGet(params);
-    }
-
-    async setThreadGoal(params: ThreadGoalSetParams): Promise<ThreadGoalSetResponse> {
-        return await this.codexClient.threadGoalSet(params);
-    }
-
-    async clearThreadGoal(params: ThreadGoalClearParams): Promise<ThreadGoalClearResponse> {
-        return await this.codexClient.threadGoalClear(params);
     }
 
     async resumeSession(request: acp.ResumeSessionRequest, onSubscribed?: () => void): Promise<SessionMetadata> {

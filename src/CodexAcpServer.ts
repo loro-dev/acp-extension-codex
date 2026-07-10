@@ -12,12 +12,6 @@ import type {
     Account,
     Model,
     ReasoningEffortOption,
-    ThreadGoalClearParams,
-    ThreadGoalClearResponse,
-    ThreadGoalGetParams,
-    ThreadGoalGetResponse,
-    ThreadGoalSetParams,
-    ThreadGoalSetResponse,
     ThreadGoalStatus,
     Thread,
     ThreadItem,
@@ -48,11 +42,8 @@ import {
     type LegacySessionModelState,
     type LegacySetSessionModelRequest,
     type LegacySetSessionModelResponse,
+    isExtMethodRequest,
     LEGACY_SET_SESSION_MODEL_METHOD,
-    THREAD_GOAL_CLEAR_METHOD,
-    THREAD_GOAL_GET_METHOD,
-    THREAD_GOAL_SET_METHOD,
-    resolveExtMethod,
 } from "./AcpExtensions";
 import {
     createCollabAgentToolCallUpdate,
@@ -147,15 +138,6 @@ interface ActivePrompt {
     requestClose: () => void;
     complete: () => void;
 }
-
-const THREAD_GOAL_STATUSES: ReadonlySet<ThreadGoalStatus> = new Set([
-    "active",
-    "paused",
-    "blocked",
-    "usageLimited",
-    "budgetLimited",
-    "complete",
-]);
 
 export class CodexAcpServer {
     private static readonly MODEL_NAME_TOKEN_OVERRIDES: Record<string, string> = {
@@ -257,11 +239,11 @@ export class CodexAcpServer {
     }
 
     async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
-        const extMethod = resolveExtMethod(method);
-        if (!extMethod) {
+        const methodRequest = { method: method, params: params };
+        if (!isExtMethodRequest(methodRequest)) {
             return {};
         }
-        switch (extMethod) {
+        switch (methodRequest.method) {
             case "authentication/status":
                 return await this.runWithProcessCheck(() => this.codexAcpClient.getAuthenticationStatus());
             case "authentication/logout": {
@@ -269,13 +251,7 @@ export class CodexAcpServer {
                 return {};
             }
             case LEGACY_SET_SESSION_MODEL_METHOD:
-                return await this.unstable_setSessionModel(this.parseLegacySetSessionModelParams(params));
-            case THREAD_GOAL_GET_METHOD:
-                return await this.getThreadGoal(this.parseThreadGoalGetParams(params));
-            case THREAD_GOAL_SET_METHOD:
-                return await this.setThreadGoal(this.parseThreadGoalSetParams(params));
-            case THREAD_GOAL_CLEAR_METHOD:
-                return await this.clearThreadGoal(this.parseThreadGoalClearParams(params));
+                return await this.unstable_setSessionModel(this.parseLegacySetSessionModelParams(methodRequest.params));
         }
     }
 
@@ -827,18 +803,6 @@ export class CodexAcpServer {
         return {};
     }
 
-    async getThreadGoal(params: ThreadGoalGetParams): Promise<ThreadGoalGetResponse> {
-        return await this.runWithProcessCheck(() => this.codexAcpClient.getThreadGoal(params));
-    }
-
-    async setThreadGoal(params: ThreadGoalSetParams): Promise<ThreadGoalSetResponse> {
-        return await this.runWithProcessCheck(() => this.codexAcpClient.setThreadGoal(params));
-    }
-
-    async clearThreadGoal(params: ThreadGoalClearParams): Promise<ThreadGoalClearResponse> {
-        return await this.runWithProcessCheck(() => this.codexAcpClient.clearThreadGoal(params));
-    }
-
     private parseLegacySetSessionModelParams(params: Record<string, unknown>): LegacySetSessionModelRequest {
         const sessionId = params["sessionId"];
         const modelId = params["modelId"];
@@ -849,71 +813,6 @@ export class CodexAcpServer {
             sessionId: sessionId,
             modelId: modelId,
         };
-    }
-
-    private parseThreadGoalGetParams(params: Record<string, unknown>): ThreadGoalGetParams {
-        return {
-            threadId: this.parseThreadGoalThreadId(params),
-        };
-    }
-
-    private parseThreadGoalClearParams(params: Record<string, unknown>): ThreadGoalClearParams {
-        return {
-            threadId: this.parseThreadGoalThreadId(params),
-        };
-    }
-
-    private parseThreadGoalSetParams(params: Record<string, unknown>): ThreadGoalSetParams {
-        const parsed: ThreadGoalSetParams = {
-            threadId: this.parseThreadGoalThreadId(params),
-        };
-
-        if (Object.prototype.hasOwnProperty.call(params, "objective")) {
-            parsed.objective = this.parseOptionalString(params["objective"]);
-        }
-        if (Object.prototype.hasOwnProperty.call(params, "status")) {
-            parsed.status = this.parseOptionalThreadGoalStatus(params["status"]);
-        }
-        if (Object.prototype.hasOwnProperty.call(params, "tokenBudget")) {
-            parsed.tokenBudget = this.parseOptionalNumber(params["tokenBudget"]);
-        }
-
-        return parsed;
-    }
-
-    private parseThreadGoalThreadId(params: Record<string, unknown>): string {
-        const threadId = params["threadId"];
-        if (typeof threadId !== "string") {
-            throw RequestError.invalidParams();
-        }
-        return threadId;
-    }
-
-    private parseOptionalString(value: unknown): string | null {
-        if (value === null || typeof value === "string") {
-            return value;
-        }
-        throw RequestError.invalidParams();
-    }
-
-    private parseOptionalNumber(value: unknown): number | null {
-        if (value === null) {
-            return null;
-        }
-        if (typeof value === "number" && Number.isFinite(value)) {
-            return value;
-        }
-        throw RequestError.invalidParams();
-    }
-
-    private parseOptionalThreadGoalStatus(value: unknown): ThreadGoalStatus | null {
-        if (value === null) {
-            return null;
-        }
-        if (typeof value === "string" && THREAD_GOAL_STATUSES.has(value as ThreadGoalStatus)) {
-            return value as ThreadGoalStatus;
-        }
-        throw RequestError.invalidParams();
     }
 
     private createSessionConfigOptions(sessionState: SessionState): Array<acp.SessionConfigOption> {

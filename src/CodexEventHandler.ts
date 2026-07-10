@@ -249,12 +249,6 @@ export class CodexEventHandler {
                     this.createSessionRateLimitsExtNotification(notification.params)
                 );
                 return;
-            case "thread/goal/updated":
-                await this.connection.notify(notification.method, notification.params);
-                return;
-            case "thread/goal/cleared":
-                await this.connection.notify(notification.method, notification.params);
-                return;
             case "item/plan/delta":
                 await this.emitCodexProposedPlanDelta(notification.params);
                 return;

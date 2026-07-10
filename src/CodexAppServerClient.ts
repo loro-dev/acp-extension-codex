@@ -37,8 +37,6 @@ import type {
     ThreadGoalClearedNotification,
     ThreadGoalClearParams,
     ThreadGoalClearResponse,
-    ThreadGoalGetParams,
-    ThreadGoalGetResponse,
     ThreadGoalSetParams,
     ThreadGoalSetResponse,
     ThreadLoadedListParams,
@@ -519,16 +517,12 @@ export class CodexAppServerClient {
         return await this.sendRequest({ method: "thread/compact/start", params: params });
     }
 
-    async threadGoalGet(params: ThreadGoalGetParams): Promise<ThreadGoalGetResponse> {
-        return await this.sendRequest({ method: "thread/goal/get", params });
-    }
-
     async threadGoalSet(params: ThreadGoalSetParams): Promise<ThreadGoalSetResponse> {
-        return await this.sendRequest({ method: "thread/goal/set", params });
+        return await this.sendRequest({ method: "thread/goal/set", params: params });
     }
 
     async threadGoalClear(params: ThreadGoalClearParams): Promise<ThreadGoalClearResponse> {
-        return await this.sendRequest({ method: "thread/goal/clear", params });
+        return await this.sendRequest({ method: "thread/goal/clear", params: params });
     }
 
     async listMcpServerStatus(params: ListMcpServerStatusParams): Promise<ListMcpServerStatusResponse> {

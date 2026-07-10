@@ -7,7 +7,6 @@ import type {
     ReviewTarget,
     SkillsListEntry,
     SkillsListParams,
-    ThreadGoal,
     TurnCompletedNotification,
 } from "./app-server/v2";
 import type {SessionState} from "./CodexAcpServer";
@@ -118,11 +117,6 @@ export class CodexCommands {
                 input: null
             },
             {
-                name: "goal",
-                description: "Set or view the goal for a long-running task.",
-                input: { hint: "objective | pause | resume | clear" }
-            },
-            {
                 name: "review",
                 description: "Review uncommitted changes, or review with custom instructions.",
                 input: { hint: "optional review instructions" }
@@ -141,6 +135,11 @@ export class CodexCommands {
                 name: "compact",
                 description: "Summarize conversation to avoid hitting the context limit.",
                 input: null
+            },
+            {
+                name: "goal",
+                description: "Set, pause, resume, or clear a task goal.",
+                input: { hint: "[<objective>|clear|pause|resume]" }
             },
             {
                 name: "logout",
@@ -286,11 +285,7 @@ export class CodexCommands {
         const sessionId = sessionState.sessionId;
         const argument = rest.trim();
         if (argument.length === 0) {
-            const response = await this.runWithProcessCheck(() => this.codexAcpClient.getThreadGoal({threadId: sessionId}));
-            const text = response.goal
-                ? this.formatThreadGoalSummary(response.goal)
-                : "Usage: /goal <objective>\nNo goal is currently set.";
-            await this.sendCommandMessage(text, sessionId);
+            await this.sendCommandUsageMessage("goal", "[<objective>|clear|pause|resume]", sessionId);
             return { handled: true };
         }
 
@@ -521,28 +516,6 @@ export class CodexCommands {
 
         const dateStr = resetDate.toLocaleDateString([], { day: 'numeric', month: 'short' });
         return ` (resets ${timeStr} on ${dateStr})`;
-    }
-
-    private formatThreadGoalSummary(goal: ThreadGoal): string {
-        const usage = goal.tokenBudget === null
-            ? `tokens used: ${goal.tokensUsed}`
-            : `tokens used: ${goal.tokensUsed} of ${goal.tokenBudget}`;
-        return [
-            `Goal ${this.formatThreadGoalStatus(goal.status)}: ${goal.objective}`,
-            usage,
-            `time used: ${goal.timeUsedSeconds} seconds`,
-        ].join("\n");
-    }
-
-    private formatThreadGoalStatus(status: ThreadGoal["status"]): string {
-        switch (status) {
-            case "usageLimited":
-                return "usage-limited";
-            case "budgetLimited":
-                return "budget-limited";
-            default:
-                return status;
-        }
     }
 
     private formatTokenCount(count: number): string {

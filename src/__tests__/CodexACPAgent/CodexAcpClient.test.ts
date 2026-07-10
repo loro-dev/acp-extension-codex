@@ -1307,31 +1307,6 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         await expect(mockFixture.getAcpConnectionDump([])).toMatchFileSnapshot("data/command-status.json");
     });
 
-    it('shows the current goal for the local goal slash command', async () => {
-        const { mockFixture, turnStartSpy } = setupPromptFixture();
-        const getThreadGoalSpy = vi.spyOn(mockFixture.getCodexAcpClient(), "getThreadGoal")
-            .mockResolvedValueOnce({ goal: null })
-            .mockResolvedValueOnce({ goal: createThreadGoal() });
-
-        await mockFixture.getCodexAcpAgent().prompt({
-            sessionId: "session-id",
-            prompt: [{ type: "text", text: "/goal" }],
-        });
-        expect(mockFixture.getAcpConnectionEvents([]).at(-1)!.args[0].update.content.text)
-            .toBe("Usage: /goal <objective>\nNo goal is currently set.");
-
-        await mockFixture.getCodexAcpAgent().prompt({
-            sessionId: "session-id",
-            prompt: [{ type: "text", text: "/goal" }],
-        });
-        expect(mockFixture.getAcpConnectionEvents([]).at(-1)!.args[0].update.content.text)
-            .toBe("Goal active: Ship the migration and keep tests green\ntokens used: 0\ntime used: 0 seconds");
-
-        expect(getThreadGoalSpy).toHaveBeenCalledTimes(2);
-        expect(getThreadGoalSpy).toHaveBeenCalledWith({ threadId: "session-id" });
-        expect(turnStartSpy).not.toHaveBeenCalled();
-    });
-
     it('passes skill slash commands through to Codex', async () => {
         const { mockFixture, turnStartSpy } = setupPromptFixture();
 
@@ -2598,9 +2573,8 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         expect(turnStartSpy).not.toHaveBeenCalled();
     });
 
-    it('reports an unset goal when the goal slash command has no input', async () => {
+    it('reports missing goal slash command input', async () => {
         const { mockFixture } = setupPromptFixture();
-        vi.spyOn(mockFixture.getCodexAcpClient(), "getThreadGoal").mockResolvedValue({goal: null});
         const goalSetSpy = vi.spyOn(mockFixture.getCodexAppServerClient(), "threadGoalSet")
             .mockResolvedValue({ goal: createThreadGoal() });
         const goalClearSpy = vi.spyOn(mockFixture.getCodexAppServerClient(), "threadGoalClear")
@@ -2616,7 +2590,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         const [event] = mockFixture.getAcpConnectionEvents([]);
         expect(event).toBeDefined();
         expect(event!.args[0].update.content.text).toBe(
-            "Usage: /goal <objective>\nNo goal is currently set."
+            'Command "/goal" requires [<objective>|clear|pause|resume].'
         );
     });
     it('returns cancelled promptly when non-interruptible slash command startup is cancelled', async () => {

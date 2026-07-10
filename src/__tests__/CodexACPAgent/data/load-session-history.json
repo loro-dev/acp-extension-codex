@@ -22,13 +22,6 @@
             "input": null
           },
           {
-            "name": "goal",
-            "description": "Set or view the goal for a long-running task.",
-            "input": {
-              "hint": "objective | pause | resume | clear"
-            }
-          },
-          {
             "name": "review",
             "description": "Review uncommitted changes, or review with custom instructions.",
             "input": {
@@ -53,6 +46,13 @@
             "name": "compact",
             "description": "Summarize conversation to avoid hitting the context limit.",
             "input": null
+          },
+          {
+            "name": "goal",
+            "description": "Set, pause, resume, or clear a task goal.",
+            "input": {
+              "hint": "[<objective>|clear|pause|resume]"
+            }
           },
           {
             "name": "logout",
