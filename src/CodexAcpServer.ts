@@ -15,7 +15,6 @@ import type {
     Thread,
     ThreadGoalStatus,
     ThreadItem,
-    TurnCompletedNotification,
     UserInput
 } from "./app-server/v2";
 import type {RateLimitsMap} from "./RateLimitsMap";
@@ -208,6 +207,7 @@ export class CodexAcpServer {
                 auth: {
                     logout: {},
                 },
+                providers: {},
                 loadSession: true,
                 promptCapabilities: {
                     embeddedContext: true,
@@ -633,6 +633,20 @@ export class CodexAcpServer {
         await this.runWithProcessCheck(() => this.codexAcpClient.logout());
         await this.refreshSessionsAuthState(null);
         logger.log("Logout request completed");
+    }
+
+    listProviders(_params: acp.ListProvidersRequest): acp.ListProvidersResponse {
+        return { providers: this.codexAcpClient.listProviders() };
+    }
+
+    setProvider(params: acp.SetProviderRequest): acp.SetProviderResponse {
+        this.codexAcpClient.setProvider(params);
+        return { };
+    }
+
+    disableProvider(params: acp.DisableProviderRequest): acp.DisableProviderResponse {
+        this.codexAcpClient.disableProvider(params);
+        return { };
     }
 
     private async refreshSessionsAuthState(authProvider: string | null): Promise<void> {
