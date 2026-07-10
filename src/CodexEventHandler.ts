@@ -3,8 +3,7 @@ import type {
     FuzzyFileSearchSessionUpdatedNotification,
     ServerNotification
 } from "./app-server";
-import type {SessionState} from "./CodexAcpServer";
-import * as acp from "@agentclientprotocol/sdk";
+import type {SessionState, ThreadGoalSnapshot} from "./CodexAcpServer";
 import {type PlanEntry, RequestError} from "@agentclientprotocol/sdk";
 import {ACPSessionConnection, type AcpClientConnection, type UpdateSessionEvent} from "./ACPSessionConnection";
 import {
@@ -33,6 +32,8 @@ import type {
     ReasoningSummaryTextDeltaNotification,
     ReasoningTextDeltaNotification,
     TerminalInteractionNotification,
+    ThreadGoalClearedNotification,
+    ThreadGoalUpdatedNotification,
     ThreadTokenUsageUpdatedNotification,
     TurnCompletedNotification,
     TurnPlanUpdatedNotification,
@@ -42,6 +43,8 @@ import type { McpStartupCompleteEvent } from "./app-server";
 import {toTokenCount} from "./TokenCount";
 import {
     commandExecutionUsesTerminalOutput,
+    createCollabAgentToolCallCompleteUpdate,
+    createCollabAgentToolCallUpdate,
     createCommandExecutionUpdate,
     createDynamicToolCallUpdate,
     createFileChangeUpdate,
@@ -62,6 +65,11 @@ import {
 } from "./CodexToolCallMapper";
 import { stripShellPrefix } from "./CommandUtils";
 import {createTerminalOutputMeta, type TerminalOutputMode} from "./TerminalOutputMode";
+import {
+    createCodexMessagePhaseMeta,
+    createAgentTextMessageChunk,
+    createAgentTextThoughtChunk,
+} from "./ContentChunks";
 
 export { stripShellPrefix };
 
@@ -79,6 +87,7 @@ export class CodexEventHandler {
     private readonly terminalCommandOutputIds = new Set<string>();
     private proposedPlanMarkdown = "";
     private proposedPlanTurnId: string | null = null;
+    private readonly agentMessagePhases = new Map<string, string | null>();
 
     constructor(connection: AcpClientConnection, sessionState: SessionState) {
         this.connection = connection;
@@ -178,9 +187,9 @@ export class CodexEventHandler {
             case "fuzzyFileSearch/sessionCompleted":
                 return this.handleFuzzyFileSearchSessionCompleted(notification.params);
             case "thread/goal/updated":
-                return null;
+                return this.createThreadGoalUpdatedEvent(notification.params);
             case "thread/goal/cleared":
-                return null;
+                return this.createThreadGoalClearedEvent(notification.params);
             case "item/commandExecution/terminalInteraction":
                 return this.createTerminalInteractionEvent(notification.params);
             // ignored events
@@ -239,12 +248,6 @@ export class CodexEventHandler {
                     ACP_EXT_SESSION_RATE_LIMITS_METHOD,
                     this.createSessionRateLimitsExtNotification(notification.params)
                 );
-                return;
-            case "thread/goal/updated":
-                await this.connection.notify(notification.method, notification.params);
-                return;
-            case "thread/goal/cleared":
-                await this.connection.notify(notification.method, notification.params);
                 return;
             case "item/plan/delta":
                 await this.emitCodexProposedPlanDelta(notification.params);
@@ -342,66 +345,79 @@ export class CodexEventHandler {
     }
 
     private async createTextEvent(event: AgentMessageDeltaNotification): Promise<UpdateSessionEvent> {
-        return {
-            sessionUpdate: "agent_message_chunk",
-            content: {
-                type: "text",
-                text: event.delta
-            }
-        }
+        const phase = this.agentMessagePhases.get(event.itemId) ?? null;
+        return createAgentTextMessageChunk(event.delta, event.itemId, createCodexMessagePhaseMeta(phase));
     }
 
     private async createConfigWarningEvent(event: ConfigWarningNotification): Promise<UpdateSessionEvent> {
         const detailsText = event.details ? `\n\n${event.details}` : "";
-        return {
-            sessionUpdate: "agent_message_chunk",
-            content: {
-                type: "text",
-                text: `Config warning: ${event.summary}${detailsText}\n\n`
-            }
-        }
+        return createAgentTextMessageChunk(`Config warning: ${event.summary}${detailsText}\n\n`);
     }
 
     private createWarningEvent(event: WarningNotification): UpdateSessionEvent {
-        return {
-            sessionUpdate: "agent_message_chunk",
-            content: {
-                type: "text",
-                text: `Warning: ${event.message}\n\n`
-            }
-        };
+        return createAgentTextMessageChunk(`Warning: ${event.message}\n\n`);
     }
 
     private createModelReroutedEvent(event: ModelReroutedNotification): UpdateSessionEvent {
+        return createAgentTextThoughtChunk(`Model rerouted from ${event.fromModel} to ${event.toModel} (${event.reason}).\n\n`);
+    }
+
+    private createThreadGoalUpdatedEvent(event: ThreadGoalUpdatedNotification): UpdateSessionEvent | null {
+        const goalSnapshot = this.createThreadGoalSnapshot(event);
+        if (this.sameThreadGoalSnapshot(this.sessionState.currentGoal, goalSnapshot)) {
+            return null;
+        }
+        this.sessionState.currentGoal = goalSnapshot;
+
+        return this.createCodexSessionInfoUpdate({
+            goal: goalSnapshot,
+        });
+    }
+
+    private createThreadGoalClearedEvent(_event: ThreadGoalClearedNotification): UpdateSessionEvent | null {
+        if (this.sessionState.currentGoal === null) {
+            return null;
+        }
+        this.sessionState.currentGoal = null;
+
+        return this.createCodexSessionInfoUpdate({
+            goal: null,
+        });
+    }
+
+    private createThreadGoalSnapshot(event: ThreadGoalUpdatedNotification): ThreadGoalSnapshot {
         return {
-            sessionUpdate: "agent_thought_chunk",
-            content: {
-                type: "text",
-                text: `Model rerouted from ${event.fromModel} to ${event.toModel} (${event.reason}).\n\n`
-            }
+            objective: event.goal.objective.trim(),
+            status: event.goal.status,
+            tokenBudget: event.goal.tokenBudget,
         };
+    }
+
+    private sameThreadGoalSnapshot(
+        left: ThreadGoalSnapshot | null | undefined,
+        right: ThreadGoalSnapshot
+    ): boolean {
+        return left !== null
+            && left !== undefined
+            && left.objective === right.objective
+            && left.status === right.status
+            && left.tokenBudget === right.tokenBudget;
     }
 
     private createReasoningDeltaEvent(
         event: ReasoningSummaryTextDeltaNotification | ReasoningTextDeltaNotification
     ): UpdateSessionEvent {
         this.seenReasoningDeltaItemIds.add(event.itemId);
-        return this.createAgentThoughtEvent(event.delta);
+        return this.createAgentThoughtEvent(event.delta, event.itemId);
     }
 
     private createReasoningSectionBreakEvent(event: ReasoningSummaryPartAddedNotification): UpdateSessionEvent {
         this.seenReasoningDeltaItemIds.add(event.itemId);
-        return this.createAgentThoughtEvent("\n\n");
+        return this.createAgentThoughtEvent("\n\n", event.itemId);
     }
 
-    private createAgentThoughtEvent(text: string): UpdateSessionEvent {
-        return {
-            sessionUpdate: "agent_thought_chunk",
-            content: {
-                type: "text",
-                text,
-            }
-        };
+    private createAgentThoughtEvent(text: string, messageId: string): UpdateSessionEvent {
+        return createAgentTextThoughtChunk(text, messageId);
     }
 
     private async createItemEvent(event: ItemStartedNotification): Promise<UpdateSessionEvent | null> {
@@ -430,11 +446,14 @@ export class CodexEventHandler {
                 this.activeImageGenerationItems.add(event.item.id);
                 return createImageGenerationStartUpdate(event.item);
             case "collabAgentToolCall":
+                return createCollabAgentToolCallUpdate(event.item);
+            case "agentMessage":
+                this.rememberAgentMessagePhase(event.item);
+                return null;
             case "subAgentActivity":
             case "sleep":
             case "userMessage":
             case "hookPrompt":
-            case "agentMessage":
             case "reasoning":
             case "enteredReviewMode":
             case "exitedReviewMode":
@@ -472,7 +491,7 @@ export class CodexEventHandler {
                 if (this.activeImageGenerationItems.delete(event.item.id)) {
                     return createImageGenerationCompleteUpdate(event.item);
                 }
-                return createImageGenerationUpdate(event.item);
+                return createImageGenerationUpdate(event.item, { terminalStatus: true });
             case "reasoning":
                 if (this.seenReasoningDeltaItemIds.delete(event.item.id)) {
                     return null;
@@ -480,22 +499,29 @@ export class CodexEventHandler {
                 return this.createCompletedReasoningEvent(event.item);
             case "webSearch":
                 return createWebSearchCompleteUpdate(event.item);
+            case "collabAgentToolCall":
+                return createCollabAgentToolCallCompleteUpdate(event.item);
+            case "agentMessage":
+                this.rememberAgentMessagePhase(event.item);
+                return null;
             case "exitedReviewMode":
                 return this.createExitedReviewModeEvent(event.item);
             case "contextCompaction":
                 return this.createContextCompactedEvent();
             //ignored types
-            case "collabAgentToolCall":
             case "subAgentActivity":
             case "sleep":
             case "userMessage":
             case "hookPrompt":
-            case "agentMessage":
             case "enteredReviewMode":
             case "plan":
                 return null;
 
         }
+    }
+
+    private rememberAgentMessagePhase(item: ThreadItem & { type: "agentMessage" }): void {
+        this.agentMessagePhases.set(item.id, item.phase);
     }
 
     private createCompletedReasoningEvent(item: ThreadItem & { type: "reasoning" }): UpdateSessionEvent | null {
@@ -504,7 +530,7 @@ export class CodexEventHandler {
         if (text.length === 0) {
             return null;
         }
-        return this.createAgentThoughtEvent(text);
+        return this.createAgentThoughtEvent(text, item.id);
     }
 
     private createExitedReviewModeEvent(item: ThreadItem & { type: "exitedReviewMode" }): UpdateSessionEvent | null {
@@ -512,23 +538,11 @@ export class CodexEventHandler {
         if (text.length === 0) {
             return null;
         }
-        return {
-            sessionUpdate: "agent_message_chunk",
-            content: {
-                type: "text",
-                text,
-            }
-        };
+        return createAgentTextMessageChunk(text);
     }
 
     private createContextCompactedEvent(): UpdateSessionEvent {
-        return {
-            sessionUpdate: "agent_message_chunk",
-            content: {
-                type: "text",
-                text: "*Context compacted to fit the model's context window.*\n\n"
-            }
-        };
+        return createAgentTextMessageChunk("*Context compacted to fit the model's context window.*\n\n");
     }
 
     private createCommandOutputDeltaEvent(event: CommandExecutionOutputDeltaNotification): UpdateSessionEvent {
@@ -661,17 +675,21 @@ export class CodexEventHandler {
     }
 
     private async createErrorEvent(params: ErrorNotification): Promise<UpdateSessionEvent> {
-        const error = params.error.codexErrorInfo
-        if (error == "unauthorized" || error == "usageLimitExceeded" || this.getHttpStatusCode(error) == 401) {
-            this.failure = RequestError.authRequired();
+        const error = params.error.codexErrorInfo;
+        if (error === "usageLimitExceeded") {
+            this.failure = RequestError.internalError(
+                this.createTurnErrorData(params.error),
+            );
+        } else if (this.isAuthenticationRequiredError(error)) {
+            this.failure = this.sessionState.authConfigured
+                ? RequestError.internalError(this.createTurnErrorData(params.error))
+                : RequestError.authRequired(this.createTurnErrorData(params.error), params.error.message);
         }
-        return {
-            sessionUpdate: "agent_message_chunk",
-            content: {
-                type: "text",
-                text: `${params.error.message}\n\n`
-            }
-        }
+        return createAgentTextMessageChunk(`${params.error.message}\n\n`);
+    }
+
+    private isAuthenticationRequiredError(error: CodexErrorInfo | null): boolean {
+        return error === "unauthorized" || this.getHttpStatusCode(error) === 401;
     }
 
     private getHttpStatusCode(error: CodexErrorInfo | null): number | null {
@@ -687,6 +705,27 @@ export class CodexEventHandler {
             }
         }
         return null;
+    }
+
+    private createTurnErrorData(error: ErrorNotification["error"]): {
+        message: string;
+        codexErrorInfo?: CodexErrorInfo;
+        additionalDetails?: string;
+    } {
+        const data: {
+            message: string;
+            codexErrorInfo?: CodexErrorInfo;
+            additionalDetails?: string;
+        } = {
+            message: error.additionalDetails ?? error.message,
+        };
+        if (error.codexErrorInfo !== null) {
+            data.codexErrorInfo = error.codexErrorInfo;
+        }
+        if (error.additionalDetails !== null) {
+            data.additionalDetails = error.additionalDetails;
+        }
+        return data;
     }
 
     private handleTokenUsageUpdated(params: ThreadTokenUsageUpdatedNotification): void {

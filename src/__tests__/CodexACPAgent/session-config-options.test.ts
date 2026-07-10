@@ -20,6 +20,7 @@ function buildModels(): {fast: Model; slow: Model} {
         description: "Frontier",
         supportedReasoningEfforts: [lowEffort, mediumEffort, highEffort],
         defaultReasoningEffort: "medium",
+        additionalSpeedTiers: ["fast"],
     });
     const slow = createTestModel({
         id: "slow-model",
@@ -89,6 +90,35 @@ describe("Session config options", () => {
         expect((modeOption as any).options.map((o: any) => o.value)).toEqual(
             AgentMode.all().map(m => m.id)
         );
+    });
+
+    it("shows the current uncataloged model as its own selectable option", async () => {
+        const {fast, slow} = buildModels();
+        const {codexAcpAgent, response} = await createSession("custom-model[high]", [fast, slow]);
+
+        const ids = response.configOptions?.map(o => o.id);
+        expect(ids).toEqual([MODE_CONFIG_ID, MODEL_CONFIG_ID, PLAN_MODE_CONFIG_ID]);
+
+        const modelOption = response.configOptions?.find(o => o.id === MODEL_CONFIG_ID);
+        expect(modelOption).toMatchObject({
+            category: "model",
+            currentValue: "custom-model",
+            type: "select",
+            options: [
+                {value: "custom-model", name: "custom-model", description: null},
+                {value: "fast-model", name: "Fast model", description: "Frontier"},
+                {value: "slow-model", name: "Slow model", description: "Strong"},
+            ],
+        });
+        expect(response.configOptions?.some(o => o.id === REASONING_EFFORT_CONFIG_ID)).toBe(false);
+
+        await codexAcpAgent.setSessionConfigOption({
+            sessionId: "session-id",
+            configId: MODEL_CONFIG_ID,
+            value: "custom-model",
+        });
+
+        expect(codexAcpAgent.getSessionState("session-id").currentModelId).toBe("custom-model[high]");
     });
 
     it("keeps the legacy models list as combined model/effort entries", async () => {

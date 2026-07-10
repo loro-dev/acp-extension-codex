@@ -6,6 +6,7 @@ import { stripShellPrefix } from "./CommandUtils";
 import type { CommandAction, Thread, ThreadItem } from "./app-server/v2";
 import { createCommandActionEvent } from "./CodexToolCallMapper";
 import { createTerminalOutputMeta, type TerminalOutputMode } from "./TerminalOutputMode";
+import { createAgentMessageChunk, createCodexMessagePhaseMeta } from "./ContentChunks";
 
 type JsonRecord = Record<string, unknown>;
 type AcpToolCallEvent = Extract<UpdateSessionEvent, { sessionUpdate: "tool_call" }>;
@@ -27,7 +28,7 @@ function historyFallbackUpdateKey(update: UpdateSessionEvent): string | null {
         case "user_message_chunk":
         case "agent_message_chunk":
         case "agent_thought_chunk":
-            return `${update.sessionUpdate}:${JSON.stringify(update.content)}`;
+            return `${update.sessionUpdate}:${update.messageId ?? ""}:${JSON.stringify(update.content)}`;
         case "tool_call":
             return `tool_call:${update.toolCallId}:start`;
         case "tool_call_update":
@@ -234,10 +235,10 @@ function createMessageUpdates(item: JsonRecord): UpdateSessionEvent[] {
         return [];
     }
 
-    return contentBlocksFromResponseContent(item["content"]).map((content) => ({
-        sessionUpdate: "agent_message_chunk",
-        content,
-    }));
+    const phase = stringValue(item["phase"]);
+    return contentBlocksFromResponseContent(item["content"]).map((content) => (
+        createAgentMessageChunk(content, undefined, createCodexMessagePhaseMeta(phase))
+    ));
 }
 
 function createEventMsgUpdates(record: JsonRecord): UpdateSessionEvent[] | null {
@@ -367,15 +368,16 @@ function createFunctionCallUpdate(item: JsonRecord): LegacyFunctionCallUpdate | 
         return null;
     }
 
+    const isExecCommand = name === "exec_command";
     const args = parseFunctionArguments(item["arguments"]);
-    const command = name === "exec_command" ? commandFromFunctionArguments(args) : null;
-    const cwd = name === "exec_command" ? cwdFromFunctionArguments(args) : "";
+    const command = isExecCommand ? commandFromFunctionArguments(args) : null;
+    const cwd = isExecCommand ? cwdFromFunctionArguments(args) : "";
     const commandAction = command ? inferCommandAction(command, cwd) : null;
     if (commandAction) {
         return {
             update: createCommandActionEvent(toolCallId, "inProgress", cwd, commandAction),
             usesTerminal: false,
-            isExecCommand: true,
+            isExecCommand,
         };
     }
 
@@ -389,13 +391,13 @@ function createFunctionCallUpdate(item: JsonRecord): LegacyFunctionCallUpdate | 
     };
 
     if (!functionCallUsesTerminal(item)) {
-        return { update, usesTerminal: false, isExecCommand: false };
+        return { update, usesTerminal: false, isExecCommand };
     }
 
     return {
         update: withTerminalContent(update, toolCallId, cwd),
         usesTerminal: true,
-        isExecCommand: true,
+        isExecCommand,
     };
 }
 
@@ -975,8 +977,7 @@ function sedFileArguments(args: string[]): string[] {
 }
 
 function looksLikeSedRangeScript(arg: string): boolean {
-    return /^(\d+|\$)?(,(\d+|\$))?[pd]$/.test(arg)
-        || /^(\d+|\$)?(,(\d+|\$))?p$/.test(arg);
+    return /^(\d+|\$)?(,(\d+|\$))?[pd]$/.test(arg);
 }
 
 function headTailFileArguments(args: string[]): string[] {

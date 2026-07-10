@@ -1,4 +1,4 @@
-import {isCodexAuthRequest} from "./CodexAuthMethod";
+import {CODEX_API_KEY_ENV_VAR, isCodexAuthRequest, OPENAI_API_KEY_ENV_VAR} from "./CodexAuthMethod";
 import type {EmbeddedResourceResource} from "@agentclientprotocol/sdk";
 import * as acp from "@agentclientprotocol/sdk";
 import {type McpServer, RequestError} from "@agentclientprotocol/sdk";
@@ -33,13 +33,8 @@ import type {
     SkillsListParams,
     SkillsListResponse,
     SandboxPolicy,
-    ThreadGoalClearParams,
-    ThreadGoalClearResponse,
-    ThreadGoalGetParams,
-    ThreadGoalGetResponse,
-    ThreadGoalSetParams,
-    ThreadGoalSetResponse,
     Thread,
+    ThreadGoalStatus,
     ThreadSourceKind,
     TurnCompletedNotification,
     TurnStartParams,
@@ -95,17 +90,15 @@ export class CodexAcpClient {
 
         switch (authRequest.methodId) {
             case "api-key": {
-                if (!authRequest._meta || !authRequest._meta["api-key"]) throw RequestError.invalidRequest();
-                const loginCompletedPromise = this.awaitNextLoginCompleted();
-                await this.codexClient.accountLogin({
-                    type: "apiKey",
-                    apiKey: authRequest._meta["api-key"].apiKey
-                });
-                this.gatewayConfig = null;
-                const result = await loginCompletedPromise;
-                return result.success;
+                const apiKey = authRequest._meta?.["api-key"]?.apiKey ?? this.readApiKeyFromEnv();
+                return await this.authenticateWithApiKey(apiKey);
             }
             case "chat-gpt": {
+                const accountResponse = await this.codexClient.accountRead({refreshToken: true});
+                if (accountResponse.account?.type === "chatgpt") {
+                    this.gatewayConfig = null;
+                    return true;
+                }
                 const loginCompletedPromise = this.awaitNextLoginCompleted();
                 const loginResponse = await this.codexClient.accountLogin({type: "chatgpt"});
                 if (loginResponse.type == "chatgpt") {
@@ -118,7 +111,7 @@ export class CodexAcpClient {
             case "gateway":
                 if (!authRequest._meta) throw RequestError.invalidRequest();
 
-                const gatewaySettings = authRequest._meta["gateway"]
+                const gatewaySettings = authRequest._meta["gateway"];
                 if (!gatewaySettings) throw RequestError.invalidRequest();
 
                 const baseUrl = gatewaySettings.baseUrl;
@@ -138,7 +131,7 @@ export class CodexAcpClient {
                         http_headers: headers,
                         wire_api: "responses"
                     }
-                }
+                };
 
                 // Early return: model provider information will be sent to Codex later during the session creation
                 return true;
@@ -148,6 +141,30 @@ export class CodexAcpClient {
         // Reset the gateway config to null if another authentication method was used
         this.gatewayConfig = null;
         return false;
+    }
+
+    private async authenticateWithApiKey(apiKey: string): Promise<Boolean> {
+        const loginCompletedPromise = this.awaitNextLoginCompleted();
+        await this.codexClient.accountLogin({
+            type: "apiKey",
+            apiKey,
+        });
+        this.gatewayConfig = null;
+        const result = await loginCompletedPromise;
+        return result.success;
+    }
+
+    private readApiKeyFromEnv(): string {
+        for (const envVar of [CODEX_API_KEY_ENV_VAR, OPENAI_API_KEY_ENV_VAR]) {
+            const value = process.env[envVar]?.trim();
+            if (value) {
+                return value;
+            }
+        }
+        throw RequestError.internalError(
+            {envVars: [CODEX_API_KEY_ENV_VAR, OPENAI_API_KEY_ENV_VAR]},
+            `${CODEX_API_KEY_ENV_VAR} or ${OPENAI_API_KEY_ENV_VAR} is not set`
+        );
     }
 
 
@@ -189,7 +206,7 @@ export class CodexAcpClient {
             return sessionModelProvider;
         }
         const settingsModelProvider = await this.codexClient.configRead({includeLayers: false});
-        return settingsModelProvider.config.model_provider ?? null;
+        return settingsModelProvider?.config?.model_provider ?? null;
     }
 
     async logout(): Promise<void> {
@@ -211,20 +228,12 @@ export class CodexAcpClient {
         return response.requiresOpenaiAuth && !response.account;
     }
 
+    hasGatewayAuth(): boolean {
+        return this.gatewayConfig !== null;
+    }
+
     async getAccount(): Promise<GetAccountResponse> {
         return this.codexClient.accountRead({refreshToken: false});
-    }
-
-    async getThreadGoal(params: ThreadGoalGetParams): Promise<ThreadGoalGetResponse> {
-        return await this.codexClient.threadGoalGet(params);
-    }
-
-    async setThreadGoal(params: ThreadGoalSetParams): Promise<ThreadGoalSetResponse> {
-        return await this.codexClient.threadGoalSet(params);
-    }
-
-    async clearThreadGoal(params: ThreadGoalClearParams): Promise<ThreadGoalClearResponse> {
-        return await this.codexClient.threadGoalClear(params);
     }
 
     async resumeSession(request: acp.ResumeSessionRequest, onSubscribed?: () => void): Promise<SessionMetadata> {
@@ -234,7 +243,7 @@ export class CodexAcpClient {
         const response = await this.codexClient.threadResume({
             config: await this.createSessionConfig(request.cwd, additionalDirectories, request.mcpServers ?? []),
             cwd: request.cwd,
-            modelProvider: this.getResumeModelProvider(),
+            modelProvider: await this.getResumeModelProvider(),
             threadId: request.sessionId,
         });
         onSubscribed?.();
@@ -244,6 +253,7 @@ export class CodexAcpClient {
             sessionId: request.sessionId,
             currentModelId: currentModelId,
             models: codexModels,
+            modelProvider: response.modelProvider,
             currentServiceTier: response.serviceTier as ServiceTier ?? null,
             additionalDirectories,
         }
@@ -256,7 +266,7 @@ export class CodexAcpClient {
         const response = await this.codexClient.threadResume({
             config: await this.createSessionConfig(request.cwd, additionalDirectories, request.mcpServers ?? []),
             cwd: request.cwd,
-            modelProvider: this.getResumeModelProvider(),
+            modelProvider: await this.getResumeModelProvider(),
             threadId: request.sessionId,
         });
         onSubscribed?.();
@@ -270,6 +280,7 @@ export class CodexAcpClient {
             sessionId: request.sessionId,
             currentModelId: currentModelId,
             models: codexModels,
+            modelProvider: response.modelProvider,
             currentServiceTier: response.serviceTier as ServiceTier ?? null,
             thread: historyResponse.thread,
             additionalDirectories,
@@ -295,6 +306,7 @@ export class CodexAcpClient {
             sessionId: response.thread.id,
             currentModelId: currentModelId,
             models: codexModels,
+            modelProvider: response.modelProvider,
             currentServiceTier: response.serviceTier as ServiceTier ?? null,
             additionalDirectories,
         };
@@ -315,7 +327,7 @@ export class CodexAcpClient {
     async runReview(
         sessionId: string,
         target: ReviewTarget,
-        onTurnStarted?: (turnId: string) => void,
+        onTurnStarted?: (turnId: string, threadId: string) => void,
     ): Promise<TurnCompletedNotification> {
         return await this.codexClient.runReview({
             threadId: sessionId,
@@ -326,6 +338,39 @@ export class CodexAcpClient {
 
     async runCompact(sessionId: string): Promise<void> {
         await this.codexClient.runCompact({threadId: sessionId});
+    }
+
+    async setGoal(
+        sessionId: string,
+        objective: string,
+        onTurnStarted?: (turnId: string) => void,
+    ): Promise<TurnCompletedNotification | null> {
+        return await this.codexClient.runGoalSet({
+            threadId: sessionId,
+            objective,
+            status: "active",
+        }, onTurnStarted);
+    }
+
+    async setGoalStatus(sessionId: string, status: ThreadGoalStatus): Promise<void> {
+        await this.codexClient.runGoalSet({
+            threadId: sessionId,
+            status,
+        });
+    }
+
+    async resumeGoal(
+        sessionId: string,
+        onTurnStarted?: (turnId: string) => void,
+    ): Promise<TurnCompletedNotification | null> {
+        return await this.codexClient.runGoalSet({
+            threadId: sessionId,
+            status: "active",
+        }, onTurnStarted);
+    }
+
+    async clearGoal(sessionId: string): Promise<void> {
+        await this.codexClient.runGoalClear({threadId: sessionId});
     }
 
     async awaitMcpServerStartup(serverNames: Array<string>, afterVersion: number): Promise<McpStartupResult> {
@@ -386,10 +431,10 @@ export class CodexAcpClient {
         return this.gatewayConfig?.modelProvider ?? this.modelProvider;
     }
 
-    private getResumeModelProvider(): string {
-        // Passing `null` forces codex to use the persisted provider for resumed session instead of default one
-        // Explicit fallback to "openai" fixes error `Model provider not found` at least for ChatGPT authentication
-        return this.getModelProvider() ?? "openai";
+    private async getResumeModelProvider(): Promise<string> {
+        // Prefer an explicit/gateway provider, then the provider persisted in Codex config.
+        // Keep OpenAI as the final fallback for ChatGPT-authenticated sessions without a configured provider.
+        return (await this.getCurrentModelProvider()) ?? "openai";
     }
 
     private async refreshSkills(
@@ -440,15 +485,30 @@ export class CodexAcpClient {
      * Falls back to model defaults if parameters are missing or unsupported.
      */
     createModelId(availableModels: Model[], modelId: string | null, reasoningEffort: ReasoningEffort | null): ModelId {
-        const selectedModel =
-            availableModels.find(m => m.id === modelId) ??
-            availableModels.find(m => m.isDefault);
+        const selectedModel = availableModels.find(m => m.id === modelId);
+        if (selectedModel) {
+            return ModelId.create(selectedModel.id, reasoningEffort ?? selectedModel.defaultReasoningEffort);
+        }
 
-        if (!selectedModel) {
+        // The configured model is not in Codex's advertised catalog. This is
+        // expected for custom providers (e.g. a self-hosted or third-party
+        // model), whose model ids the catalog does not enumerate. Keep the
+        // requested model id instead of silently substituting the built-in
+        // default. This mirrors the Codex CLI, which keeps the configured model
+        // and merely warns "Model metadata not found. Defaulting to fallback
+        // metadata." Substituting the default here pins a wrong model id onto
+        // every turn and makes requests to custom-provider endpoints fail with
+        // "unknown model".
+        if (modelId) {
+            return ModelId.create(modelId, reasoningEffort ?? "medium");
+        }
+
+        const defaultModel = availableModels.find(m => m.isDefault);
+        if (!defaultModel) {
             throw new Error(`Model selection failed: No model found for ID "${modelId}" and no default model is defined.`);
         }
 
-        return ModelId.create(selectedModel.id, reasoningEffort ?? selectedModel.defaultReasoningEffort);
+        return ModelId.create(defaultModel.id, reasoningEffort ?? defaultModel.defaultReasoningEffort);
     }
 
     async subscribeToSessionEvents(
@@ -608,11 +668,6 @@ export class CodexAcpClient {
             "vscode",
             "exec",
             "appServer",
-            "subAgent",
-            "subAgentReview",
-            "subAgentCompact",
-            "subAgentThreadSpawn",
-            "subAgentOther",
             "unknown",
         ];
         const requestedCwd = request.cwd?.trim() ?? null;
@@ -633,26 +688,23 @@ export class CodexAcpClient {
             sourceKinds: sourceKinds,
         });
 
+        const mapThreadToSession = (thread: Thread) => ({
+            sessionId: thread.id,
+            cwd: thread.cwd,
+            title: (thread.name ?? thread.preview) || null,
+            updatedAt: new Date(thread.updatedAt * 1000).toISOString(),
+        });
+
         if (listResponse.data.length === 0) {
             const diagnostics = await this.runSessionListDiagnostics();
             logger.log("Session list diagnostics", diagnostics);
         }
 
-        let sessions = listResponse.data.map((thread) => ({
-            sessionId: thread.id,
-            cwd: thread.cwd,
-            title: (thread.name ?? thread.preview) || null,
-            updatedAt: new Date(thread.updatedAt * 1000).toISOString(),
-        }));
+        let sessions = listResponse.data.map(mapThreadToSession);
         if (requestedCwd) {
             const filtered = listResponse.data
                 .filter(filterByCwd)
-                .map((thread) => ({
-                    sessionId: thread.id,
-                    cwd: thread.cwd,
-                    title: (thread.name ?? thread.preview) || null,
-                    updatedAt: new Date(thread.updatedAt * 1000).toISOString(),
-                }));
+                .map(mapThreadToSession);
             if (filtered.length > 0 || path.isAbsolute(requestedCwd)) {
                 sessions = filtered;
             } else {
@@ -717,6 +769,7 @@ export type SessionMetadata = {
     sessionId: string,
     currentModelId: string,
     models: Model[],
+    modelProvider?: string | null,
     currentServiceTier?: ServiceTier | null,
     additionalDirectories: string[],
 }

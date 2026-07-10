@@ -81,11 +81,6 @@ describe("CodexACPAgent - list sessions", () => {
                 "vscode",
                 "exec",
                 "appServer",
-                "subAgent",
-                "subAgentReview",
-                "subAgentCompact",
-                "subAgentThreadSpawn",
-                "subAgentOther",
                 "unknown",
             ],
         }));

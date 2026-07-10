@@ -22,13 +22,6 @@
             "input": null
           },
           {
-            "name": "goal",
-            "description": "Set or view the goal for a long-running task.",
-            "input": {
-              "hint": "objective | pause | resume | clear"
-            }
-          },
-          {
             "name": "review",
             "description": "Review uncommitted changes, or review with custom instructions.",
             "input": {
@@ -55,6 +48,13 @@
             "input": null
           },
           {
+            "name": "goal",
+            "description": "Set, pause, resume, or clear a task goal.",
+            "input": {
+              "hint": "[<objective>|clear|pause|resume]"
+            }
+          },
+          {
             "name": "logout",
             "description": "Sign out of Codex. This option is available when you are logged in via ChatGPT.",
             "input": null
@@ -71,6 +71,7 @@
       "sessionId": "session-1",
       "update": {
         "sessionUpdate": "user_message_chunk",
+        "messageId": "item-user-1",
         "content": {
           "type": "text",
           "text": "Hi"
@@ -86,6 +87,7 @@
       "sessionId": "session-1",
       "update": {
         "sessionUpdate": "user_message_chunk",
+        "messageId": "item-user-1",
         "content": {
           "type": "text",
           "text": "[@image](https://example.com/image.png)"
@@ -101,6 +103,7 @@
       "sessionId": "session-1",
       "update": {
         "sessionUpdate": "agent_message_chunk",
+        "messageId": "item-agent-1",
         "content": {
           "type": "text",
           "text": "Hello!"
@@ -116,6 +119,7 @@
       "sessionId": "session-1",
       "update": {
         "sessionUpdate": "agent_thought_chunk",
+        "messageId": "item-reason-1",
         "content": {
           "type": "text",
           "text": "Thinking..."

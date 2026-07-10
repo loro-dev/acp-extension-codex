@@ -1,8 +1,6 @@
 import {Readable, Writable} from "node:stream";
-import {Disposable} from "vscode-jsonrpc";
-import type {PartialMessageInfo} from "vscode-jsonrpc/lib/common/messageReader";
-import {Emitter, Message, MessageReader, MessageWriter} from "vscode-jsonrpc/node";
-import type {DataCallback} from "vscode-jsonrpc/node";
+import {Emitter} from "vscode-jsonrpc/node";
+import type {DataCallback, Disposable, Message, MessageReader, MessageWriter, PartialMessageInfo} from "vscode-jsonrpc/node";
 import * as acp from "@agentclientprotocol/sdk";
 
 //TODO ask to include proper jsonrpc field and remove
