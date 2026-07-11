@@ -74,6 +74,7 @@ import {
 import packageJson from "../package.json";
 import {isJetBrains2026_1Client} from "./JBUtils";
 import {resolveTerminalOutputMode, type TerminalOutputMode} from "./TerminalOutputMode";
+import {sanitizeReasoningParts} from "./ReasoningText";
 import {
     createCodexMessagePhaseMeta,
     createAgentTextMessageChunk,
@@ -1082,9 +1083,9 @@ export class CodexAcpServer {
     }
 
     private createReasoningUpdates(item: ThreadItem & { type: "reasoning" }): UpdateSessionEvent[] {
-        const parts = item.summary.length > 0 ? item.summary : item.content;
         const messageId = item.id;
-        return parts.map((text) => createAgentTextThoughtChunk(text, messageId));
+        return sanitizeReasoningParts(item.summary, item.content)
+            .map((text) => createAgentTextThoughtChunk(text, messageId));
     }
 
     private createWebSearchUpdate(

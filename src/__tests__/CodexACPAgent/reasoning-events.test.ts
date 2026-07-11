@@ -102,4 +102,57 @@ describe("CodexEventHandler - reasoning events", () => {
             "data/reasoning-completed-parts.json"
         );
     });
+
+    it("filters a trailing empty comment split across reasoning summary deltas", async () => {
+        const notifications: ServerNotification[] = [
+            {
+                method: "item/reasoning/summaryTextDelta",
+                params: {
+                    threadId: sessionId,
+                    turnId: "turn-1",
+                    itemId: "reasoning-comment",
+                    summaryIndex: 0,
+                    delta: "**Checking files**\n\n<!",
+                },
+            },
+            {
+                method: "item/reasoning/summaryTextDelta",
+                params: {
+                    threadId: sessionId,
+                    turnId: "turn-1",
+                    itemId: "reasoning-comment",
+                    summaryIndex: 0,
+                    delta: "-- -->",
+                },
+            },
+            {
+                method: "item/completed",
+                params: {
+                    threadId: sessionId,
+                    turnId: "turn-1",
+                    completedAtMs: 0,
+                    item: {
+                        type: "reasoning",
+                        id: "reasoning-comment",
+                        summary: ["**Checking files**\n\n<!-- -->"],
+                        content: [],
+                    },
+                },
+            },
+        ];
+
+        await setupPromptAndSendNotifications(mockFixture, sessionId, sessionState, notifications);
+
+        expect(mockFixture.getAcpConnectionEvents([])).toEqual([{
+            method: "sessionUpdate",
+            args: [{
+                sessionId,
+                update: {
+                    sessionUpdate: "agent_thought_chunk",
+                    messageId: "reasoning-comment",
+                    content: {type: "text", text: "**Checking files**\n\n"},
+                },
+            }],
+        }]);
+    });
 });
