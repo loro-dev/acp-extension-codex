@@ -65,6 +65,7 @@ import {
 } from "./CodexToolCallMapper";
 import { stripShellPrefix } from "./CommandUtils";
 import {createTerminalOutputMeta, type TerminalOutputMode} from "./TerminalOutputMode";
+import {ReasoningSummaryFilter, stripEmptyReasoningComments} from "./ReasoningText";
 import {
     createCodexMessagePhaseMeta,
     createAgentTextMessageChunk,
@@ -83,6 +84,7 @@ export class CodexEventHandler {
     private readonly activeImageGenerationItems = new Set<string>();
     private readonly emittedImageViewItems = new Set<string>();
     private readonly seenReasoningDeltaItemIds = new Set<string>();
+    private readonly reasoningSummaryFilters = new Map<string, ReasoningSummaryFilter>();
     private readonly terminalCommandIds = new Set<string>();
     private readonly terminalCommandOutputIds = new Set<string>();
     private proposedPlanMarkdown = "";
@@ -175,9 +177,9 @@ export class CodexEventHandler {
             case "thread/compacted":
                 return this.createContextCompactedEvent();
             case "item/reasoning/summaryTextDelta":
-                return this.createReasoningDeltaEvent(notification.params);
+                return this.createReasoningSummaryDeltaEvent(notification.params);
             case "item/reasoning/textDelta":
-                return this.createReasoningDeltaEvent(notification.params);
+                return this.createRawReasoningDeltaEvent(notification.params);
             case "item/reasoning/summaryPartAdded":
                 return this.createReasoningSectionBreakEvent(notification.params);
             case "model/rerouted":
@@ -404,16 +406,35 @@ export class CodexEventHandler {
             && left.tokenBudget === right.tokenBudget;
     }
 
-    private createReasoningDeltaEvent(
-        event: ReasoningSummaryTextDeltaNotification | ReasoningTextDeltaNotification
-    ): UpdateSessionEvent {
+    private createReasoningSummaryDeltaEvent(event: ReasoningSummaryTextDeltaNotification): UpdateSessionEvent | null {
+        this.seenReasoningDeltaItemIds.add(event.itemId);
+        let filter = this.reasoningSummaryFilters.get(event.itemId);
+        if (!filter) {
+            filter = new ReasoningSummaryFilter();
+            this.reasoningSummaryFilters.set(event.itemId, filter);
+        }
+        const text = filter.push(event.delta);
+        return text.length > 0 ? this.createAgentThoughtEvent(text, event.itemId) : null;
+    }
+
+    private createRawReasoningDeltaEvent(event: ReasoningTextDeltaNotification): UpdateSessionEvent {
         this.seenReasoningDeltaItemIds.add(event.itemId);
         return this.createAgentThoughtEvent(event.delta, event.itemId);
     }
 
     private createReasoningSectionBreakEvent(event: ReasoningSummaryPartAddedNotification): UpdateSessionEvent {
         this.seenReasoningDeltaItemIds.add(event.itemId);
-        return this.createAgentThoughtEvent("\n\n", event.itemId);
+        const trailingText = this.finishReasoningSummaryFilter(event.itemId);
+        return this.createAgentThoughtEvent(`${trailingText}\n\n`, event.itemId);
+    }
+
+    private finishReasoningSummaryFilter(itemId: string): string {
+        const filter = this.reasoningSummaryFilters.get(itemId);
+        if (!filter) {
+            return "";
+        }
+        this.reasoningSummaryFilters.delete(itemId);
+        return filter.finish();
     }
 
     private createAgentThoughtEvent(text: string, messageId: string): UpdateSessionEvent {
@@ -494,7 +515,10 @@ export class CodexEventHandler {
                 return createImageGenerationUpdate(event.item, { terminalStatus: true });
             case "reasoning":
                 if (this.seenReasoningDeltaItemIds.delete(event.item.id)) {
-                    return null;
+                    const trailingText = this.finishReasoningSummaryFilter(event.item.id);
+                    return trailingText.length > 0
+                        ? this.createAgentThoughtEvent(trailingText, event.item.id)
+                        : null;
                 }
                 return this.createCompletedReasoningEvent(event.item);
             case "webSearch":
@@ -526,7 +550,10 @@ export class CodexEventHandler {
 
     private createCompletedReasoningEvent(item: ThreadItem & { type: "reasoning" }): UpdateSessionEvent | null {
         const parts = item.summary.length > 0 ? item.summary : item.content;
-        const text = parts.filter(part => part.length > 0).join("\n\n");
+        const text = parts
+            .map(part => item.summary.length > 0 ? stripEmptyReasoningComments(part) : part)
+            .filter(part => part.length > 0)
+            .join("\n\n");
         if (text.length === 0) {
             return null;
         }

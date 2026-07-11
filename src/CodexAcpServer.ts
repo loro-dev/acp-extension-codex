@@ -74,6 +74,7 @@ import {
 import packageJson from "../package.json";
 import {isJetBrains2026_1Client} from "./JBUtils";
 import {resolveTerminalOutputMode, type TerminalOutputMode} from "./TerminalOutputMode";
+import {stripEmptyReasoningComments} from "./ReasoningText";
 import {
     createCodexMessagePhaseMeta,
     createAgentTextMessageChunk,
@@ -1084,7 +1085,10 @@ export class CodexAcpServer {
     private createReasoningUpdates(item: ThreadItem & { type: "reasoning" }): UpdateSessionEvent[] {
         const parts = item.summary.length > 0 ? item.summary : item.content;
         const messageId = item.id;
-        return parts.map((text) => createAgentTextThoughtChunk(text, messageId));
+        return parts
+            .map((text) => item.summary.length > 0 ? stripEmptyReasoningComments(text) : text)
+            .filter((text) => text.length > 0)
+            .map((text) => createAgentTextThoughtChunk(text, messageId));
     }
 
     private createWebSearchUpdate(
