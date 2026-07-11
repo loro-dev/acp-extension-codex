@@ -65,7 +65,7 @@ import {
 } from "./CodexToolCallMapper";
 import { stripShellPrefix } from "./CommandUtils";
 import {createTerminalOutputMeta, type TerminalOutputMode} from "./TerminalOutputMode";
-import {ReasoningSummaryFilter, stripEmptyReasoningComments} from "./ReasoningText";
+import {ReasoningSummaryFilter, sanitizeReasoningParts} from "./ReasoningText";
 import {
     createCodexMessagePhaseMeta,
     createAgentTextMessageChunk,
@@ -549,11 +549,7 @@ export class CodexEventHandler {
     }
 
     private createCompletedReasoningEvent(item: ThreadItem & { type: "reasoning" }): UpdateSessionEvent | null {
-        const parts = item.summary.length > 0 ? item.summary : item.content;
-        const text = parts
-            .map(part => item.summary.length > 0 ? stripEmptyReasoningComments(part) : part)
-            .filter(part => part.length > 0)
-            .join("\n\n");
+        const text = sanitizeReasoningParts(item.summary, item.content).join("\n\n");
         if (text.length === 0) {
             return null;
         }

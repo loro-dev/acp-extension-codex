@@ -7,7 +7,7 @@ import type { CommandAction, Thread, ThreadItem } from "./app-server/v2";
 import { createCommandActionEvent } from "./CodexToolCallMapper";
 import { createTerminalOutputMeta, type TerminalOutputMode } from "./TerminalOutputMode";
 import { createAgentMessageChunk, createCodexMessagePhaseMeta } from "./ContentChunks";
-import { stripEmptyReasoningComments } from "./ReasoningText";
+import { sanitizeReasoningParts, stripEmptyReasoningComments } from "./ReasoningText";
 
 type JsonRecord = Record<string, unknown>;
 type AcpToolCallEvent = Extract<UpdateSessionEvent, { sessionUpdate: "tool_call" }>;
@@ -336,15 +336,7 @@ function contentBlocksFromResponseContent(content: unknown): ContentBlock[] {
 }
 
 function createReasoningUpdates(item: JsonRecord): UpdateSessionEvent[] {
-    const parts = textParts(item["summary"]);
-    const hasSummary = parts.length > 0;
-    if (parts.length === 0) {
-        parts.push(...textParts(item["content"]));
-    }
-
-    return parts
-        .map((text) => hasSummary ? stripEmptyReasoningComments(text) : text)
-        .filter((text) => text.length > 0)
+    return sanitizeReasoningParts(textParts(item["summary"]), textParts(item["content"]))
         .map((text) => ({
             sessionUpdate: "agent_thought_chunk" as const,
             content: { type: "text" as const, text },

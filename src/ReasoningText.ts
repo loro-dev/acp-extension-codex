@@ -75,3 +75,16 @@ export function stripEmptyReasoningComments(text: string): string {
     const filter = new ReasoningSummaryFilter();
     return filter.push(text) + filter.finish();
 }
+
+/**
+ * Selects a reasoning item's displayable parts: summary when present, else raw content. Only the
+ * summary carries the model's empty-comment markers, so stripping is applied to summary parts only,
+ * never to raw content. Empty parts are dropped.
+ */
+export function sanitizeReasoningParts(summary: string[], content: string[]): string[] {
+    const useSummary = summary.length > 0;
+    const parts = useSummary ? summary : content;
+    return parts
+        .map((part) => useSummary ? stripEmptyReasoningComments(part) : part)
+        .filter((part) => part.length > 0);
+}
