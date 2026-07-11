@@ -1,5 +1,10 @@
 # Repository Guidelines
 
+## Pull Requests
+
+- Always open pull requests against the `loro-dev` organization repository
+  (`loro-dev/acp-extension-codex`), not a personal fork.
+
 ## Project Structure
 
 - `src/` — ACP server implementation. Entry point: `src/index.ts`.
