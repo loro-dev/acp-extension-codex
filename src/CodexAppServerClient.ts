@@ -64,6 +64,8 @@ import type {
     PermissionsRequestApprovalResponse,
     ItemCompletedNotification,
 } from "./app-server/v2";
+import type {TurnSteerParams} from "./app-server/v2/TurnSteerParams";
+import type {TurnSteerResponse} from "./app-server/v2/TurnSteerResponse";
 
 export interface ApprovalHandler {
     handleCommandExecution(params: CommandExecutionRequestApprovalParams): Promise<CommandExecutionRequestApprovalResponse>;
@@ -239,6 +241,10 @@ export class CodexAppServerClient {
 
     async turnStart(params: TurnStartParams): Promise<TurnStartResponse> {
         return await this.sendRequest({ method: "turn/start", params: params });
+    }
+
+    async turnSteer(params: TurnSteerParams): Promise<TurnSteerResponse> {
+        return await this.sendRequest({ method: "turn/steer", params });
     }
 
     async runTurn(params: TurnStartParams, onTurnStarted?: (turnId: string) => void): Promise<TurnCompletedNotification> {

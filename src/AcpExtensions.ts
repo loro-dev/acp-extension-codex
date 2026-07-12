@@ -10,6 +10,31 @@ export const LEGACY_SET_SESSION_MODEL_METHOD = "session/set_model";
 export const ACP_EXT_SESSION_USAGE_UPDATE_METHOD = "_acp_ext:session_usage_update";
 export const ACP_EXT_SESSION_RATE_LIMITS_METHOD = "_acp_ext:session_rate_limits";
 export const ACP_EXT_CODEX_PROPOSED_PLAN_METHOD = "_acp_ext:codex_proposed_plan";
+export const CODEX_STEER_APPLIED_METHOD = "_codex/steerApplied";
+
+export type CodexSteerCapability = {
+    version: 1;
+    appliedNotification: typeof CODEX_STEER_APPLIED_METHOD;
+    upstreamTurn: "same";
+    configPolicy: "active";
+}
+
+export const CODEX_STEER_CAPABILITY: CodexSteerCapability = {
+    version: 1,
+    appliedNotification: CODEX_STEER_APPLIED_METHOD,
+    upstreamTurn: "same",
+    configPolicy: "active",
+};
+
+export function getCodexSteerId(meta: unknown): string | null {
+    if (typeof meta !== "object" || meta === null) return null;
+    const codex = (meta as Record<string, unknown>)["codex"];
+    if (typeof codex !== "object" || codex === null) return null;
+    const steer = (codex as Record<string, unknown>)["steer"];
+    if (typeof steer !== "object" || steer === null) return null;
+    const id = (steer as Record<string, unknown>)["id"];
+    return typeof id === "string" && id.length > 0 ? id : null;
+}
 
 export type LegacySessionModel = {
     modelId: string;
