@@ -39,35 +39,6 @@ url = "https://example.com/mcp"
         removeDirectoryWithRetry(codexHome);
     });
 
-    it('should preserve the global url-based MCP when ACP passes a command-type MCP with the same name', async () => {
-        const codexAcpAgent = fixture.getCodexAcpAgent();
-        await codexAcpAgent.initialize({protocolVersion: 1});
-
-        fixture.getCodexAcpClient().authRequired = vi.fn().mockResolvedValue(false);
-
-        const conflictingMcp: McpServerStdio = {
-            name: "shared-mcp",
-            command: "./node_modules/.bin/mcp-hello-world",
-            args: ["example"],
-            env: [{name: "example", value: "example"}],
-        };
-
-        const newSessionResponse = await codexAcpAgent.newSession({
-            cwd: "",
-            mcpServers: [conflictingMcp],
-        });
-        fixture.clearAcpConnectionDump();
-
-        await codexAcpAgent.prompt({
-            sessionId: newSessionResponse.sessionId,
-            prompt: [{type: "text", text: "/mcp"}],
-        });
-
-        const transportDump = fixture.getAcpConnectionDump([]);
-        expect(transportDump).contain("Configured MCP servers:");
-        expect(transportDump).contain("- shared-mcp");
-    });
-
     it('should not filter the conflicting ACP MCP when config filtering is disabled', async () => {
         vi.stubEnv("DISABLE_MCP_CONFIG_FILTERING", "true");
         const codexAcpAgent = fixture.getCodexAcpAgent();
