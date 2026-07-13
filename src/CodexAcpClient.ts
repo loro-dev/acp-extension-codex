@@ -603,6 +603,20 @@ export class CodexAcpClient {
         return await this.codexClient.runTurn(params, onTurnStarted);
     }
 
+    async sendSteer(
+        request: acp.PromptRequest,
+        expectedTurnId: string,
+        steerId: string,
+    ): Promise<string> {
+        const response = await this.codexClient.turnSteer({
+            threadId: request.sessionId,
+            input: buildPromptItems(request.prompt),
+            expectedTurnId,
+            clientUserMessageId: steerId,
+        });
+        return response.turnId;
+    }
+
     resolveTurnInterrupted(params: { threadId: string, turnId: string }): void {
         this.codexClient.resolveTurnInterrupted(params.threadId, params.turnId);
     }

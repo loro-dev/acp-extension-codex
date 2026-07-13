@@ -58,6 +58,16 @@ describe('CodexACPAgent - initialize', () => {
                     http: true,
                     sse: false,
                 },
+                _meta: {
+                    codex: {
+                        steer: {
+                            version: 1,
+                            appliedNotification: "_codex/steerApplied",
+                            upstreamTurn: "same",
+                            configPolicy: "active",
+                        },
+                    },
+                },
             },
             authMethods: getCodexAuthMethods(),
         });

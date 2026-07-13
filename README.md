@@ -13,6 +13,7 @@ Use [OpenAI Codex](https://github.com/openai/codex) from [Agent Client Protocol]
 - Text prompts, embedded context, images, resource links, and additional workspace directories.
 - Shell command, file change, permission request, MCP tool call, terminal output, reasoning, plan, web search, image generation, image view, token usage, and review events.
 - Client-provided MCP servers over command-based stdio config and HTTP transport.
+- Acknowledged steering of an active Codex turn through app-server `turn/steer`.
 - Slash commands: `/status`, `/mcp`, `/skills`, `/review`, `/review-branch`, `/review-commit`, `/compact`, and `/logout`, as well as configured skills.
 
 ## Installation
@@ -43,6 +44,15 @@ The adapter advertises ACP auth methods during initialization. Clients can authe
 - ChatGPT login. Set `NO_BROWSER=1` to hide this method in remote or browserless environments.
 - API key via `CODEX_API_KEY` or `OPENAI_API_KEY`.
 - A custom OpenAI-compatible gateway, when the client opts in to the gateway auth capability.
+
+## Steering extension
+
+The initialize response advertises `_meta.codex.steer` with the applied notification
+method and active-turn configuration policy. To steer a running prompt, send another
+`session/prompt` with a unique `_meta.codex.steer.id`. The adapter calls Codex
+`turn/steer` and emits `_codex/steerApplied { sessionId, steerId }` only after Codex
+commits the correlated user-message item. The steer keeps the active turn's model,
+mode, and configuration; slash commands cannot be steered.
 
 ## Runtime options
 

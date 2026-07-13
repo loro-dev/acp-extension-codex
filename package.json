@@ -3,7 +3,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "version": "1.1.2",
+  "version": "1.2.0",
   "description": "An ACP-compatible coding agent powered by Codex",
   "main": "dist/index.js",
   "bin": {

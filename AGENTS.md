@@ -1,5 +1,10 @@
 # Repository Guidelines
 
+## Pull Requests
+
+- Always open pull requests against the `loro-dev` organization repository
+  (`loro-dev/acp-extension-codex`), not a personal fork.
+
 ## Project Structure
 
 - `src/` — ACP server implementation. Entry point: `src/index.ts`.
@@ -28,6 +33,7 @@
 
 - Codex app-server usage: see https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md when touching protocol/transport details, adding or consuming JSON-RPC methods, handling approvals/turn events, or updating generated schema/clients.
 - App-server events: prefer `thread/*`, `turn/*`, and `item/*` event surfaces; avoid the deprecated `codex/event/*` API (planned removal). Keep implementations aligned with generated types in `src/app-server` (including `v2` exports).
+- Steer uses app-server `turn/steer` on the tracked active turn. Correlate `clientUserMessageId` and acknowledge only the matching `item/completed(userMessage)`; never emulate steer with a second `turn/start`.
 - Codex reasoning summaries can echo trailing empty HTML comments from model instructions. Keep
   that provider-specific cleanup in `src/ReasoningText.ts` across live deltas and history replay;
   do not filter assistant text, raw reasoning, or HTML globally in the client renderer.
