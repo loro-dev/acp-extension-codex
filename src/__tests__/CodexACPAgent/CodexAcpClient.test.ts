@@ -91,6 +91,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             "model/list",
             "thread/started",
             "account/read",
+            "account/rateLimits/read",
             "skills/list",
         ]);
         expect(loginRequest).toEqual({
@@ -3307,6 +3308,65 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         expect(event!.args[0].update.content.text).toBe("No findings.");
     });
 
+    it ('should read and publish the full rate limit snapshot when a session opens', async () => {
+        const mockFixture = createCodexMockTestFixture();
+        const codexAcpAgent = mockFixture.getCodexAcpAgent();
+        const codexAcpClient = mockFixture.getCodexAcpClient();
+        const model = createTestModel();
+        const snapshot = {
+            limitId: "codex",
+            limitName: "Codex",
+            primary: { usedPercent: 29, resetsAt: 1784505071, windowDurationMins: 10080 },
+            secondary: null,
+            credits: null,
+            individualLimit: null,
+            planType: "plus" as const,
+            rateLimitReachedType: null,
+        };
+
+        vi.spyOn(codexAcpClient, "authRequired").mockResolvedValue(false);
+        vi.spyOn(codexAcpClient, "getAccount").mockResolvedValue({
+            account: null,
+            requiresOpenaiAuth: false,
+        });
+        vi.spyOn(codexAcpClient, "newSession").mockResolvedValue({
+            sessionId: "session-id",
+            currentModelId: ModelId.create(model.id, model.defaultReasoningEffort).toString(),
+            models: [model],
+            additionalDirectories: [],
+        });
+        vi.spyOn(codexAcpClient, "getRateLimits").mockResolvedValue({
+            rateLimits: snapshot,
+            rateLimitsByLimitId: { codex: snapshot },
+            rateLimitResetCredits: null,
+        });
+
+        const response = await codexAcpAgent.newSession({cwd: "/workspace", mcpServers: []});
+        await vi.waitFor(() => {
+            expect(codexAcpAgent.getSessionState(response.sessionId).rateLimits?.get("codex")?.snapshot)
+                .toEqual(snapshot);
+        });
+        expect(mockFixture.getAcpConnectionEvents([])).toContainEqual({
+            method: "notify",
+            args: [
+                ACP_EXT_SESSION_RATE_LIMITS_METHOD,
+                {
+                    schemaVersion: 2,
+                    planName: "plus",
+                    limitName: "Codex",
+                    limitId: "codex",
+                    windows: [
+                        { usedPercent: 29, resetsAt: 1784505071, windowDurationMins: 10080 },
+                    ],
+                    fiveHour: null,
+                    sevenDay: 29,
+                    fiveHourResetAt: null,
+                    sevenDayResetAt: 1784505071,
+                },
+            ],
+        });
+    });
+
     it ('should accumulate rate limits from multiple notifications', async () => {
         const sessionId = "test-session-id";
         const { mockFixture, sessionState } = setupPromptFixture({ sessionId });
@@ -3323,7 +3383,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
                 rateLimits: {
                     limitId: "standard-limit",
                     limitName: "Standard",
-                    primary: { usedPercent: 30, resetsAt: null, windowDurationMins: 60 },
+                    primary: { usedPercent: 30, resetsAt: 1784505071, windowDurationMins: 10080 },
                     secondary: null,
                     credits: null,
                     individualLimit: null,
@@ -3339,7 +3399,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
                 rateLimits: {
                     limitId: "fast-limit",
                     limitName: "Fast",
-                    primary: { usedPercent: 50, resetsAt: null, windowDurationMins: 1440 },
+                    primary: { usedPercent: 50, resetsAt: 1784100000, windowDurationMins: 300 },
                     secondary: null,
                     credits: null,
                     individualLimit: null,
@@ -3358,7 +3418,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             snapshot: {
                 limitId: "standard-limit",
                 limitName: "Standard",
-                primary: { usedPercent: 30, resetsAt: null, windowDurationMins: 60 },
+                primary: { usedPercent: 30, resetsAt: 1784505071, windowDurationMins: 10080 },
                 secondary: null,
                 credits: null,
                 individualLimit: null,
@@ -3372,7 +3432,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             snapshot: {
                 limitId: "fast-limit",
                 limitName: "Fast",
-                primary: { usedPercent: 50, resetsAt: null, windowDurationMins: 1440 },
+                primary: { usedPercent: 50, resetsAt: 1784100000, windowDurationMins: 300 },
                 secondary: null,
                 credits: null,
                 individualLimit: null,
@@ -3385,13 +3445,17 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             args: [
                 ACP_EXT_SESSION_RATE_LIMITS_METHOD,
                 {
+                    schemaVersion: 2,
                     planName: null,
                     limitName: "Standard",
                     limitId: "standard-limit",
-                    fiveHour: 30,
-                    sevenDay: null,
+                    windows: [
+                        { usedPercent: 30, resetsAt: 1784505071, windowDurationMins: 10080 },
+                    ],
+                    fiveHour: null,
+                    sevenDay: 30,
                     fiveHourResetAt: null,
-                    sevenDayResetAt: null,
+                    sevenDayResetAt: 1784505071,
                 },
             ],
         });
@@ -3400,13 +3464,91 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             args: [
                 ACP_EXT_SESSION_RATE_LIMITS_METHOD,
                 {
+                    schemaVersion: 2,
                     planName: null,
                     limitName: "Fast",
                     limitId: "fast-limit",
+                    windows: [
+                        { usedPercent: 50, resetsAt: 1784100000, windowDurationMins: 300 },
+                    ],
                     fiveHour: 50,
                     sevenDay: null,
-                    fiveHourResetAt: null,
+                    fiveHourResetAt: 1784100000,
                     sevenDayResetAt: null,
+                },
+            ],
+        });
+    });
+
+    it ('should merge sparse rate limit updates into the previous snapshot', async () => {
+        const sessionId = "test-session-id";
+        const { mockFixture, sessionState } = setupPromptFixture({ sessionId });
+
+        await mockFixture.getCodexAcpAgent().prompt({
+            sessionId,
+            prompt: [{ type: "text", text: "test" }],
+        });
+        mockFixture.clearAcpConnectionDump();
+
+        mockFixture.sendServerNotification({
+            method: "account/rateLimits/updated",
+            params: {
+                rateLimits: {
+                    limitId: "codex",
+                    limitName: "Codex",
+                    primary: { usedPercent: 29, resetsAt: 1784505071, windowDurationMins: 10080 },
+                    secondary: null,
+                    credits: null,
+                    individualLimit: null,
+                    planType: "pro",
+                    rateLimitReachedType: null,
+                }
+            }
+        });
+        mockFixture.sendServerNotification({
+            method: "account/rateLimits/updated",
+            params: {
+                rateLimits: {
+                    limitId: "codex",
+                    limitName: null,
+                    primary: null,
+                    secondary: { usedPercent: 11, resetsAt: 1784100000, windowDurationMins: 300 },
+                    credits: null,
+                    individualLimit: null,
+                    planType: null,
+                    rateLimitReachedType: null,
+                }
+            }
+        });
+        await mockFixture.getCodexAcpClient().waitForSessionNotifications(sessionId);
+
+        expect(sessionState.rateLimits?.get("codex")?.snapshot).toEqual({
+            limitId: "codex",
+            limitName: "Codex",
+            primary: { usedPercent: 29, resetsAt: 1784505071, windowDurationMins: 10080 },
+            secondary: { usedPercent: 11, resetsAt: 1784100000, windowDurationMins: 300 },
+            credits: null,
+            individualLimit: null,
+            planType: "pro",
+            rateLimitReachedType: null,
+        });
+        expect(mockFixture.getAcpConnectionEvents([]).at(-1)).toEqual({
+            method: "notify",
+            args: [
+                ACP_EXT_SESSION_RATE_LIMITS_METHOD,
+                {
+                    schemaVersion: 2,
+                    planName: "pro",
+                    limitName: "Codex",
+                    limitId: "codex",
+                    windows: [
+                        { usedPercent: 29, resetsAt: 1784505071, windowDurationMins: 10080 },
+                        { usedPercent: 11, resetsAt: 1784100000, windowDurationMins: 300 },
+                    ],
+                    fiveHour: 11,
+                    sevenDay: 29,
+                    fiveHourResetAt: 1784100000,
+                    sevenDayResetAt: 1784505071,
                 },
             ],
         });

@@ -57,10 +57,18 @@ export type SessionUsageExtNotification = {
     }
 }
 
+export type SessionRateLimitWindow = {
+    usedPercent: number;
+    windowDurationMins: number | null;
+    resetsAt: number | null;
+}
+
 export type SessionRateLimitsExtNotification = {
+    schemaVersion: 2;
     planName: string | null;
     limitName: string | null;
     limitId: string | null;
+    windows: Array<SessionRateLimitWindow>;
     fiveHour: number | null;
     sevenDay: number | null;
     fiveHourResetAt: number | null;

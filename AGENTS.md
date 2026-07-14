@@ -37,3 +37,7 @@
 - Codex reasoning summaries can echo trailing empty HTML comments from model instructions. Keep
   that provider-specific cleanup in `src/ReasoningText.ts` across live deltas and history replay;
   do not filter assistant text, raw reasoning, or HTML globally in the client renderer.
+- Account rate-limit windows are dynamic. Read the full `account/rateLimits/read` snapshot when a
+  session opens, merge sparse `account/rateLimits/updated` values into that snapshot, and preserve
+  each window's `windowDurationMins` in the ACP extension. Never infer 5-hour/7-day meaning from
+  `primary`/`secondary` position; only populate legacy fixed fields when the duration matches.

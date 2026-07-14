@@ -15,7 +15,6 @@ import {
     type SessionUsageExtNotification,
 } from "./AcpExtensions";
 import type {
-    AccountRateLimitsUpdatedNotification,
     AgentMessageDeltaNotification,
     CodexErrorInfo,
     CommandExecutionOutputDeltaNotification,
@@ -31,6 +30,7 @@ import type {
     ReasoningSummaryPartAddedNotification,
     ReasoningSummaryTextDeltaNotification,
     ReasoningTextDeltaNotification,
+    RateLimitSnapshot,
     TerminalInteractionNotification,
     ThreadGoalClearedNotification,
     ThreadGoalUpdatedNotification,
@@ -101,6 +101,10 @@ export class CodexEventHandler {
     }
 
     async handleNotification(notification: ServerNotification) {
+        if (notification.method === "account/rateLimits/updated") {
+            await this.handleRateLimitsSnapshot(notification.params.rateLimits, true);
+            return;
+        }
         const session = new ACPSessionConnection(this.connection, this.sessionState.sessionId);
         const updateEvent = await this.createUpdateEvent(notification);
         if (updateEvent) {
@@ -162,7 +166,6 @@ export class CodexEventHandler {
             case "item/mcpToolCall/progress":
                 return this.createMcpToolProgressEvent(notification.params);
             case "account/rateLimits/updated":
-                this.handleRateLimitsUpdated(notification.params);
                 return null;
             case "configWarning":
                 return await this.createConfigWarningEvent(notification.params);
@@ -245,12 +248,6 @@ export class CodexEventHandler {
                     this.createSessionUsageExtNotification(notification.params)
                 );
                 return;
-            case "account/rateLimits/updated":
-                await this.notifyExt(
-                    ACP_EXT_SESSION_RATE_LIMITS_METHOD,
-                    this.createSessionRateLimitsExtNotification(notification.params)
-                );
-                return;
             case "item/plan/delta":
                 await this.emitCodexProposedPlanDelta(notification.params);
                 return;
@@ -323,17 +320,27 @@ export class CodexEventHandler {
     }
 
     private createSessionRateLimitsExtNotification(
-        params: AccountRateLimitsUpdatedNotification
+        rateLimits: RateLimitSnapshot
     ): SessionRateLimitsExtNotification {
-        const rateLimits = params.rateLimits;
+        const windows = [rateLimits.primary, rateLimits.secondary].filter(
+            (window): window is NonNullable<typeof window> => window !== null
+        );
+        const fiveHour = windows.find(window => window.windowDurationMins === 5 * 60) ?? null;
+        const sevenDay = windows.find(window => window.windowDurationMins === 7 * 24 * 60) ?? null;
         return {
+            schemaVersion: 2,
             planName: rateLimits.planType,
             limitName: rateLimits.limitName,
             limitId: rateLimits.limitId,
-            fiveHour: rateLimits.primary?.usedPercent ?? null,
-            sevenDay: rateLimits.secondary?.usedPercent ?? null,
-            fiveHourResetAt: rateLimits.primary?.resetsAt ?? null,
-            sevenDayResetAt: rateLimits.secondary?.resetsAt ?? null,
+            windows: windows.map(window => ({
+                usedPercent: window.usedPercent,
+                windowDurationMins: window.windowDurationMins,
+                resetsAt: window.resetsAt,
+            })),
+            fiveHour: fiveHour?.usedPercent ?? null,
+            sevenDay: sevenDay?.usedPercent ?? null,
+            fiveHourResetAt: fiveHour?.resetsAt ?? null,
+            sevenDayResetAt: sevenDay?.resetsAt ?? null,
         };
     }
 
@@ -773,16 +780,41 @@ export class CodexEventHandler {
         };
     }
 
-    private handleRateLimitsUpdated(params: AccountRateLimitsUpdatedNotification): void {
+    async handleRateLimitsSnapshot(rateLimits: RateLimitSnapshot, sparse = false): Promise<void> {
+        const merged = this.storeRateLimitsSnapshot(rateLimits, sparse);
+        await this.notifyExt(
+            ACP_EXT_SESSION_RATE_LIMITS_METHOD,
+            this.createSessionRateLimitsExtNotification(merged)
+        );
+    }
+
+    private storeRateLimitsSnapshot(rateLimits: RateLimitSnapshot, sparse: boolean): RateLimitSnapshot {
         if (!this.sessionState.rateLimits) {
             this.sessionState.rateLimits = new Map();
         }
-        const limitId = params.rateLimits.limitId ?? params.rateLimits.limitName ?? "unknown";
+        const fallbackLimitId = this.sessionState.rateLimits.size === 1
+            ? this.sessionState.rateLimits.keys().next().value
+            : null;
+        const limitId = rateLimits.limitId ?? rateLimits.limitName ?? fallbackLimitId ?? "unknown";
+        const existing = this.sessionState.rateLimits.get(limitId)?.snapshot;
+        const snapshot = sparse && existing
+            ? {
+                limitId: rateLimits.limitId ?? existing.limitId,
+                limitName: rateLimits.limitName ?? existing.limitName,
+                primary: rateLimits.primary ?? existing.primary,
+                secondary: rateLimits.secondary ?? existing.secondary,
+                credits: rateLimits.credits ?? existing.credits,
+                individualLimit: rateLimits.individualLimit ?? existing.individualLimit,
+                planType: rateLimits.planType ?? existing.planType,
+                rateLimitReachedType: rateLimits.rateLimitReachedType ?? existing.rateLimitReachedType,
+            }
+            : rateLimits;
         this.sessionState.rateLimits.set(limitId, {
             limitId: limitId,
-            limitName: params.rateLimits.limitName ?? limitId,
-            snapshot: params.rateLimits,
+            limitName: snapshot.limitName ?? limitId,
+            snapshot,
         });
+        return snapshot;
     }
 
     private handleFuzzyFileSearchSessionUpdated(

@@ -11,6 +11,7 @@ import type {CollaborationMode, InputModality, ReasoningEffort, ServerNotificati
 import type {
     Account,
     Model,
+    RateLimitSnapshot,
     ReasoningEffortOption,
     ThreadGoalStatus,
     Thread,
@@ -445,6 +446,7 @@ export class CodexAcpServer {
             terminalOutputMode: this.terminalOutputMode,
         };
         this.sessions.set(sessionId, sessionState);
+        this.publishRateLimitsAsync(sessionState);
         resumeSubscribed = false;
 
         if (requestedMcpServers.length > 0 && mcpServerStartupVersion !== null) {
@@ -485,6 +487,37 @@ export class CodexAcpServer {
             return true;
         }
         return a === b;
+    }
+
+    private publishRateLimitsAsync(sessionState: SessionState): void {
+        if (
+            !sessionState.authConfigured ||
+            !this.authProviderUsesOpenAiAccount(sessionState.authProvider)
+        ) {
+            return;
+        }
+
+        void this.codexAcpClient.getRateLimits()
+            .then(async response => {
+                if (this.sessions.get(sessionState.sessionId) !== sessionState) {
+                    return;
+                }
+                if (!response?.rateLimits) {
+                    return;
+                }
+                const rateLimitsById = Object.values(response.rateLimitsByLimitId ?? {})
+                    .filter((snapshot): snapshot is RateLimitSnapshot => snapshot !== undefined);
+                const snapshots = rateLimitsById.length > 0
+                    ? rateLimitsById
+                    : [response.rateLimits];
+                const handler = new CodexEventHandler(this.connection, sessionState);
+                for (const snapshot of snapshots) {
+                    await handler.handleRateLimitsSnapshot(snapshot);
+                }
+            })
+            .catch(err => {
+                logger.error(`Failed to read rate limits for session ${sessionState.sessionId}`, err);
+            });
     }
 
     private getAuthProviderForAuthenticateRequest(request: acp.AuthenticateRequest): string | null {
@@ -673,6 +706,7 @@ export class CodexAcpServer {
         for (const sessionState of sessionsToRefresh) {
             sessionState.account = authState.account;
             sessionState.authConfigured = authState.authConfigured;
+            this.publishRateLimitsAsync(sessionState);
         }
     }
 
@@ -988,6 +1022,7 @@ export class CodexAcpServer {
             terminalOutputMode: this.terminalOutputMode,
         };
         this.sessions.set(sessionId, sessionState);
+        this.publishRateLimitsAsync(sessionState);
         subscribed = false;
 
         if (requestedMcpServers.length > 0 && mcpServerStartupVersion !== null) {
