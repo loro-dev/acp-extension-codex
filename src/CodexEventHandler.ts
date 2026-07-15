@@ -46,6 +46,8 @@ import {
     createCollabAgentToolCallCompleteUpdate,
     createCollabAgentToolCallUpdate,
     createCommandExecutionUpdate,
+    createContextCompactionCompleteUpdate,
+    createContextCompactionStartUpdate,
     createDynamicToolCallUpdate,
     createFileChangeUpdate,
     createGuardianApprovalReviewToolCall,
@@ -141,6 +143,10 @@ export class CodexEventHandler {
             case "thread/tokenUsage/updated":
                 return this.createUsageUpdate(notification.params);
             case "thread/name/updated":
+                this.sessionState.sessionTitle = notification.params.threadName ?? null;
+                this.sessionState.sessionTitleSource = notification.params.threadName == null
+                    ? "unset"
+                    : "explicit";
                 return {
                     sessionUpdate: "session_info_update",
                     title: notification.params.threadName ?? null,
@@ -478,6 +484,8 @@ export class CodexEventHandler {
             case "agentMessage":
                 this.rememberAgentMessagePhase(event.item);
                 return null;
+            case "contextCompaction":
+                return createContextCompactionStartUpdate(event.item);
             case "subAgentActivity":
             case "sleep":
             case "userMessage":
@@ -485,7 +493,6 @@ export class CodexEventHandler {
             case "reasoning":
             case "enteredReviewMode":
             case "exitedReviewMode":
-            case "contextCompaction":
             case "plan":
                 return null;
         }
@@ -538,7 +545,7 @@ export class CodexEventHandler {
             case "exitedReviewMode":
                 return this.createExitedReviewModeEvent(event.item);
             case "contextCompaction":
-                return this.createContextCompactedEvent();
+                return createContextCompactionCompleteUpdate(event.item);
             //ignored types
             case "subAgentActivity":
             case "sleep":
@@ -706,7 +713,15 @@ export class CodexEventHandler {
 
     private async createErrorEvent(params: ErrorNotification): Promise<UpdateSessionEvent> {
         const error = params.error.codexErrorInfo;
-        if (error === "usageLimitExceeded") {
+        if (params.willRetry) {
+            return this.createCodexSessionInfoUpdate({
+                error: {
+                    ...params.error,
+                    turnId: params.turnId,
+                    willRetry: true,
+                },
+            });
+        } else if (error === "usageLimitExceeded") {
             this.failure = RequestError.internalError(
                 this.createTurnErrorData(params.error),
             );
