@@ -70,6 +70,18 @@
     {
       "sessionId": "session-1",
       "update": {
+        "sessionUpdate": "session_info_update",
+        "title": "Saved title"
+      }
+    }
+  ]
+}
+{
+  "method": "sessionUpdate",
+  "args": [
+    {
+      "sessionId": "session-1",
+      "update": {
         "sessionUpdate": "user_message_chunk",
         "messageId": "item-user-1",
         "content": {
@@ -323,6 +335,24 @@
           "revisedPrompt": "A tiny blue square",
           "result": "iVBORw0KGgo=",
           "savedPath": "/test/project/generated-blue-square.png"
+        }
+      }
+    }
+  ]
+}
+{
+  "method": "sessionUpdate",
+  "args": [
+    {
+      "sessionId": "session-1",
+      "update": {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "item-context-compaction-1",
+        "kind": "other",
+        "title": "Context compacted",
+        "status": "completed",
+        "_meta": {
+          "contextCompaction": true
         }
       }
     }

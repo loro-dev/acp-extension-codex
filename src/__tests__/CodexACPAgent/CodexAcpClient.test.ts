@@ -3245,7 +3245,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         await expect(mockFixture.getAcpConnectionDump([])).toMatchFileSnapshot("data/thread-compacted.json");
     });
 
-    it ('should surface contextCompaction item as user-visible message', async () => {
+    it ('should surface contextCompaction item lifecycle as a tool call', async () => {
         const sessionId = "test-session-id";
         const { mockFixture } = setupPromptFixture({ sessionId });
 
@@ -3257,6 +3257,15 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         mockFixture.clearAcpConnectionDump();
 
         mockFixture.sendServerNotification({
+            method: "item/started",
+            params: {
+                threadId: sessionId,
+                turnId: "turn-id",
+                startedAtMs: 0,
+                item: { type: "contextCompaction", id: "context-compaction-id" },
+            },
+        });
+        mockFixture.sendServerNotification({
             method: "item/completed",
             params: {
                 threadId: sessionId,
@@ -3267,11 +3276,11 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         });
 
         await vi.waitFor(() => {
-            const dump = mockFixture.getAcpConnectionDump([]);
-            expect(dump.length).toBeGreaterThan(0);
+            const events = mockFixture.getAcpConnectionEvents([]);
+            expect(events).toHaveLength(2);
         });
 
-        await expect(mockFixture.getAcpConnectionDump([])).toMatchFileSnapshot("data/thread-compacted.json");
+        await expect(mockFixture.getAcpConnectionDump([])).toMatchFileSnapshot("data/context-compaction-lifecycle.json");
     });
 
     it ('should surface exitedReviewMode item as user-visible review output', async () => {

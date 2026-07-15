@@ -257,8 +257,8 @@ export class CodexCommands {
                 return { handled: true };
             }
             default:
-                await this.sendUnknownCommandMessage(commandName, sessionId);
-                return { handled: true };
+                // Let Codex resolve unrecognized commands as raw prompts.
+                return { handled: false };
         }
     }
 
@@ -362,18 +362,6 @@ export class CodexCommands {
     private async sendCommandMessage(text: string, sessionId: string): Promise<void> {
         const session = new ACPSessionConnection(this.connection, sessionId);
         await session.update(createAgentTextMessageChunk(text));
-    }
-
-    private async sendUnknownCommandMessage(name: string, sessionId: string): Promise<void> {
-        const lines = this.getBuiltinCommands().map(command => `- /${command.name}: ${command.description}`);
-        const text = [
-            `Unknown command "/${name}".`,
-            "Available commands:"
-        ];
-        if (lines.length > 0) {
-            text.push(...lines);
-        }
-        await this.sendCommandMessage(text.join("\n"), sessionId);
     }
 
     private buildStatusMessage(sessionState: SessionState): string {

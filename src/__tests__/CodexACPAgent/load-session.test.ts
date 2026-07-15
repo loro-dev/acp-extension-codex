@@ -66,7 +66,7 @@ describe("CodexACPAgent - loadSession", () => {
             agentNickname: null,
             agentRole: null,
             gitInfo: null,
-            name: null,
+            name: "Saved title",
             turns: [
                 {
                     id: "turn-1",
@@ -160,6 +160,10 @@ describe("CodexACPAgent - loadSession", () => {
                             revisedPrompt: "A tiny blue square",
                             result: "iVBORw0KGgo=",
                             savedPath: "/test/project/generated-blue-square.png",
+                        },
+                        {
+                            type: "contextCompaction",
+                            id: "item-context-compaction-1",
                         },
                     ],
                 },

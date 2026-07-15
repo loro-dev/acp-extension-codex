@@ -388,6 +388,8 @@ export function createTestSessionState(overrides?: Partial<SessionState>): Sessi
         planModeEnabled: false,
         planModeExplicitlySet: false,
         terminalOutputMode: "terminal_output_delta",
+        sessionTitle: null,
+        sessionTitleSource: "unknown",
         ...overrides,
     };
 }
