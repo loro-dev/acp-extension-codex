@@ -682,6 +682,7 @@ export class CodexAcpClient {
             threadId: request.sessionId,
             input: input,
             approvalPolicy: agentMode.approvalPolicy,
+            approvalsReviewer: agentMode.approvalsReviewer,
             sandboxPolicy: addAdditionalDirectoriesToSandboxPolicy(agentMode.sandboxPolicy, additionalDirectories),
             summary: disableSummary ? "none" : "auto",
             effort: effort,

@@ -1,4 +1,4 @@
-import type {AskForApproval, SandboxMode, SandboxPolicy} from "./app-server/v2";
+import type {ApprovalsReviewer, AskForApproval, SandboxMode, SandboxPolicy} from "./app-server/v2";
 import type {SessionConfigOption, SessionMode, SessionModeState} from "@agentclientprotocol/sdk";
 
 export const MODE_CONFIG_ID = "mode";
@@ -10,14 +10,16 @@ export class AgentMode {
     readonly approvalPolicy: AskForApproval;
     readonly sandboxPolicy: SandboxPolicy;
     readonly sandboxMode: SandboxMode;
+    readonly approvalsReviewer: ApprovalsReviewer;
 
-    private constructor(id: string, name: string, description: string, approval: AskForApproval, sandbox: SandboxPolicy, sandboxMode: SandboxMode) {
+    private constructor(id: string, name: string, description: string, approval: AskForApproval, sandbox: SandboxPolicy, sandboxMode: SandboxMode, approvalsReviewer: ApprovalsReviewer = "user") {
         this.id = id;
         this.name = name;
         this.description = description;
         this.approvalPolicy = approval;
         this.sandboxPolicy = sandbox;
         this.sandboxMode = sandboxMode; // same as sandboxPolicy, need to look for
+        this.approvalsReviewer = approvalsReviewer;
     }
 
     static readonly ReadOnly = new AgentMode(
@@ -44,6 +46,21 @@ export class AgentMode {
             excludeSlashTmp: false
         },
         "workspace-write"
+    );
+    static readonly AgentAutoReview = new AgentMode(
+        "agent-auto-review",
+        "Agent (auto review)",
+        "Read and edit files, and run commands. Approval requests are reviewed automatically by a Codex subagent.",
+        "on-request",
+        {
+            type: "workspaceWrite",
+            writableRoots: [],
+            networkAccess: false,
+            excludeTmpdirEnvVar: false,
+            excludeSlashTmp: false
+        },
+        "workspace-write",
+        "auto_review"
     );
     static readonly AgentFullAccess = new AgentMode(
         "agent-full-access",
@@ -88,7 +105,7 @@ export class AgentMode {
     }
 
     static all(): AgentMode[] {
-        return [AgentMode.ReadOnly, AgentMode.Agent, AgentMode.AgentFullAccess];
+        return [AgentMode.ReadOnly, AgentMode.Agent, AgentMode.AgentAutoReview, AgentMode.AgentFullAccess];
     }
 
     static find(modeId: string): AgentMode | null {
