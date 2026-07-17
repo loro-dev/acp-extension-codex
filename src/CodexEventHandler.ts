@@ -18,7 +18,6 @@ import type {
     AgentMessageDeltaNotification,
     CodexErrorInfo,
     CommandExecutionOutputDeltaNotification,
-    ConfigWarningNotification,
     ErrorNotification,
     ItemGuardianApprovalReviewCompletedNotification,
     ItemGuardianApprovalReviewStartedNotification,
@@ -36,8 +35,7 @@ import type {
     ThreadGoalUpdatedNotification,
     ThreadTokenUsageUpdatedNotification,
     TurnCompletedNotification,
-    TurnPlanUpdatedNotification,
-    WarningNotification
+    TurnPlanUpdatedNotification
 } from "./app-server/v2";
 import type { McpStartupCompleteEvent } from "./app-server";
 import {toTokenCount} from "./TokenCount";
@@ -173,10 +171,27 @@ export class CodexEventHandler {
                 return this.createMcpToolProgressEvent(notification.params);
             case "account/rateLimits/updated":
                 return null;
+            // Warnings are transient process/status signals (e.g. the skills
+            // context-budget notice). They must not become agent text chunks —
+            // clients persist message chunks into history and derive titles from
+            // them. Forward them as structured `_meta.codex.warning` metadata so
+            // clients can render them as warnings without polluting text output.
             case "configWarning":
-                return await this.createConfigWarningEvent(notification.params);
+                return this.createCodexSessionInfoUpdate({
+                    warning: {
+                        source: "configWarning",
+                        message: notification.params.details
+                            ? `${notification.params.summary}\n\n${notification.params.details}`
+                            : notification.params.summary,
+                    },
+                });
             case "warning":
-                return this.createWarningEvent(notification.params);
+                return this.createCodexSessionInfoUpdate({
+                    warning: {
+                        source: "warning",
+                        message: notification.params.message,
+                    },
+                });
             case "guardianWarning":
                 return null;
             case "item/autoApprovalReview/started":
@@ -362,15 +377,6 @@ export class CodexEventHandler {
     private async createTextEvent(event: AgentMessageDeltaNotification): Promise<UpdateSessionEvent> {
         const phase = this.agentMessagePhases.get(event.itemId) ?? null;
         return createAgentTextMessageChunk(event.delta, event.itemId, createCodexMessagePhaseMeta(phase));
-    }
-
-    private async createConfigWarningEvent(event: ConfigWarningNotification): Promise<UpdateSessionEvent> {
-        const detailsText = event.details ? `\n\n${event.details}` : "";
-        return createAgentTextMessageChunk(`Config warning: ${event.summary}${detailsText}\n\n`);
-    }
-
-    private createWarningEvent(event: WarningNotification): UpdateSessionEvent {
-        return createAgentTextMessageChunk(`Warning: ${event.message}\n\n`);
     }
 
     private createModelReroutedEvent(event: ModelReroutedNotification): UpdateSessionEvent {
