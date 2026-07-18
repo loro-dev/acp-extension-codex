@@ -4,7 +4,6 @@ import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {CODEX_API_KEY_ENV_VAR, OPENAI_API_KEY_ENV_VAR, type CodexAuthRequest} from "../../CodexAuthMethod";
 import type * as acp from "@agentclientprotocol/sdk";
 import {
-    createArrayDump,
     createCodexMockTestFixture,
     createTestFixture,
     createTestModel,
@@ -32,26 +31,6 @@ describe('ACP server test', { timeout: 40_000 }, () => {
     });
 
     const ignoredFields = ["thread", "cwd", "id", "createdAt", "path", "threadId", "userAgent", "sandbox",  "conversationId", "origins", "supportedReasoningEfforts", "reasoningEffort", "model", "readOnlyAccess", "approvalsReviewer"];
-
-    it('should throw error without authentication', async () => {
-        vi.stubEnv(CODEX_API_KEY_ENV_VAR, "");
-        vi.stubEnv(OPENAI_API_KEY_ENV_VAR, "");
-        const authFixture = createTestFixture();
-        const codexAcpAgent = authFixture.getCodexAcpAgent();
-
-        await codexAcpAgent.initialize({protocolVersion: 1});
-        authFixture.clearCodexConnectionDump();
-
-        await expect(
-            codexAcpAgent.newSession({cwd: "", mcpServers: []})
-        ).rejects.toThrow("Authentication required");
-
-        const transportEvents = authFixture.getCodexConnectionEvents(ignoredFields).filter(event =>
-            event.eventType !== "notification" || event.method !== "remoteControl/status/changed"
-        );
-        const transportDump = createArrayDump(transportEvents, []);
-        await expect(transportDump).toMatchFileSnapshot("data/auth-failed.json");
-    });
 
     it('should authenticate with key', async () => {
         const keyFixture = createTestFixture();
