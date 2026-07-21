@@ -293,7 +293,7 @@ export class CodexAcpServer {
         }
     }
 
-    async getOrCreateSession(request: acp.NewSessionRequest | acp.ResumeSessionRequest): Promise<[SessionId, LegacySessionModelState, SessionModeState]> {
+    async getOrCreateSession(request: acp.NewSessionRequest | acp.ResumeSessionRequest): Promise<[SessionId, LegacySessionModelState, SessionModeState, acp.AvailableCommand[]]> {
         try {
             return await this.tryCreateSession(request);
         } catch (e) {
@@ -374,7 +374,7 @@ export class CodexAcpServer {
         return generation;
     }
 
-    async tryCreateSession(request: acp.NewSessionRequest | acp.ResumeSessionRequest): Promise<[SessionId, LegacySessionModelState, SessionModeState]> {
+    async tryCreateSession(request: acp.NewSessionRequest | acp.ResumeSessionRequest): Promise<[SessionId, LegacySessionModelState, SessionModeState, acp.AvailableCommand[]]> {
         const requestedSessionGeneration = "sessionId" in request
             ? this.beginSessionOpen(request.sessionId)
             : null;
@@ -462,11 +462,11 @@ export class CodexAcpServer {
             this.publishMcpStartupStatusAsync(sessionId);
         }
 
-        this.publishAvailableCommandsAsync(sessionState);
+        const availableCommands = await this.availableCommands.getAvailableCommands(sessionState);
         const sessionModelState: LegacySessionModelState = this.createModelState(models, currentModelId);
         const sessionModeState: SessionModeState = sessionState.agentMode.toSessionModeState();
 
-        return [sessionId, sessionModelState, sessionModeState];
+        return [sessionId, sessionModelState, sessionModeState, availableCommands];
     }
 
     private async getAuthStateForProvider(authProvider: string | null): Promise<ActiveAuthState> {
@@ -539,9 +539,11 @@ export class CodexAcpServer {
             modelState,
             modeState,
             thread,
+            availableCommands,
         } = await this.getOrCreateSessionWithHistory(params);
 
         await this.streamThreadHistory(sessionId, thread);
+        this.publishAvailableCommandsAsync(sessionId, availableCommands);
 
         logger.log("Session loaded", {
             sessionId: sessionId,
@@ -551,13 +553,15 @@ export class CodexAcpServer {
         return {
             models: modelState,
             modes: modeState,
+            availableCommands,
             ...this.createSessionConfigOptionsResponse(this.getSessionState(sessionId)),
         };
     }
 
     async resumeSession(params: acp.ResumeSessionRequest): Promise<LegacyResumeSessionResponse> {
         logger.log("Resuming session...", {sessionId: params.sessionId});
-        const [sessionId, modelState, modeState] = await this.getOrCreateSession(params);
+        const [sessionId, modelState, modeState, availableCommands] = await this.getOrCreateSession(params);
+        this.publishAvailableCommandsAsync(sessionId, availableCommands);
 
         logger.log("Session resumed", {
             sessionId: sessionId,
@@ -567,6 +571,7 @@ export class CodexAcpServer {
         return {
             models: modelState,
             modes: modeState,
+            availableCommands,
             ...this.createSessionConfigOptionsResponse(this.getSessionState(sessionId)),
         };
     }
@@ -663,7 +668,8 @@ export class CodexAcpServer {
         params: acp.NewSessionRequest,
     ): Promise<LegacyNewSessionResponse> {
         logger.log("Starting new session...");
-        const [sessionId, modelState, modeState] = await this.getOrCreateSession(params);
+        const [sessionId, modelState, modeState, availableCommands] = await this.getOrCreateSession(params);
+        this.publishAvailableCommandsAsync(sessionId, availableCommands);
 
         logger.log("New session created", {
             sessionId: sessionId,
@@ -675,8 +681,22 @@ export class CodexAcpServer {
             sessionId: sessionId,
             models: modelState,
             modes: modeState,
+            availableCommands,
             ...this.createSessionConfigOptionsResponse(this.getSessionState(sessionId)),
         };
+    }
+
+    private publishAvailableCommandsAsync(
+        sessionId: SessionId,
+        availableCommands: acp.AvailableCommand[]
+    ): void {
+        setTimeout(() => {
+            const sessionState = this.sessions.get(sessionId);
+            if (!sessionState) return;
+            void this.availableCommands.publish(sessionState, availableCommands).catch(err => {
+                logger.error(`Failed to publish available commands for session ${sessionId}`, err);
+            });
+        }, 0);
     }
 
     async authenticate(
@@ -936,10 +956,6 @@ export class CodexAcpServer {
         };
     }
 
-    private publishAvailableCommandsAsync(sessionState: SessionState) {
-        void this.availableCommands.publish(sessionState);
-    }
-
     private findCurrentModel(models: Model[], currentModelId: string): Model | undefined {
         const modelId = ModelId.fromString(currentModelId);
         return models.find(m => m.id === modelId.model);
@@ -974,6 +990,7 @@ export class CodexAcpServer {
         modelState: LegacySessionModelState;
         modeState: SessionModeState;
         thread: Thread;
+        availableCommands: acp.AvailableCommand[];
     }> {
         const requestedSessionGeneration = this.beginSessionOpen(request.sessionId);
         await this.checkAuthorization();
@@ -1054,7 +1071,7 @@ export class CodexAcpServer {
             this.publishMcpStartupStatusAsync(sessionId);
         }
 
-        await this.availableCommands.publish(sessionState);
+        const availableCommands = await this.availableCommands.getAvailableCommands(sessionState);
         const sessionModelState: LegacySessionModelState = this.createModelState(models, currentModelId);
         const sessionModeState: SessionModeState = sessionState.agentMode.toSessionModeState();
 
@@ -1063,6 +1080,7 @@ export class CodexAcpServer {
             modelState: sessionModelState,
             modeState: sessionModeState,
             thread: thread,
+            availableCommands,
         };
     }
 

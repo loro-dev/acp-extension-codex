@@ -49,22 +49,35 @@ export class CodexCommands {
         this.onLogout = onLogout;
     }
 
-    async publish(sessionState: SessionState): Promise<void> {
+    async publish(
+        sessionState: SessionState,
+        availableCommands?: AvailableCommand[]
+    ): Promise<void> {
         try {
-            const skillsResponse = await this.runWithProcessCheck(() => this.codexAcpClient.listSkills(this.createSkillsListParams(sessionState)));
-            const availableCommands = this.buildAvailableCommands(skillsResponse?.data ?? []);
-            if (availableCommands.length === 0) {
+            const commands = availableCommands ?? await this.getAvailableCommands(sessionState);
+            if (commands.length === 0) {
                 return;
             }
 
             const session = new ACPSessionConnection(this.connection, sessionState.sessionId);
             await session.update({
                 sessionUpdate: "available_commands_update",
-                availableCommands
+                availableCommands: commands
             });
         } catch (err) {
             logger.error(`Failed to publish available commands for session ${sessionState.sessionId}`, err);
         }
+    }
+
+    async getAvailableCommands(sessionState: SessionState): Promise<AvailableCommand[]> {
+        let skillsEntries: SkillsListEntry[] = [];
+        try {
+            const skillsResponse = await this.runWithProcessCheck(() => this.codexAcpClient.listSkills(this.createSkillsListParams(sessionState)));
+            skillsEntries = skillsResponse?.data ?? [];
+        } catch (err) {
+            logger.error(`Failed to resolve available commands for session ${sessionState.sessionId}`, err);
+        }
+        return this.buildAvailableCommands(skillsEntries);
     }
 
     private createSkillsListParams(sessionState: SessionState): SkillsListParams {

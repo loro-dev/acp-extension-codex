@@ -721,6 +721,9 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         });
 
         expect(session.sessionId).toBe("thread-id");
+        expect(session.availableCommands).toContainEqual(expect.objectContaining({
+            name: "review",
+        }));
     });
 
     it('prefetches skills before turn start', async () => {
@@ -1295,6 +1298,21 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         });
 
         await expect(mockFixture.getAcpConnectionDump([])).toMatchFileSnapshot("data/available-commands-skills.json");
+    });
+
+    it('should retain builtin commands when skills discovery fails', async () => {
+        const mockFixture = createCodexMockTestFixture();
+        const codexAcpAgent = mockFixture.getCodexAcpAgent();
+
+        vi.spyOn(mockFixture.getCodexAcpClient(), "listSkills").mockRejectedValue(new Error("skills unavailable"));
+
+        // @ts-expect-error - exercising private helper
+        const commands = await codexAcpAgent.availableCommands.getAvailableCommands(createTestSessionState({
+            sessionId: "session-id",
+            cwd: "/workspace",
+        }));
+
+        expect(commands).toContainEqual(expect.objectContaining({name: "review"}));
     });
 
     it('handles builtin slash command locally', async () => {

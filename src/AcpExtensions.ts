@@ -1,4 +1,5 @@
 import type {
+    AvailableCommand,
     ClientContext,
     LoadSessionResponse,
     NewSessionResponse,
@@ -93,14 +94,17 @@ export type LegacySetSessionModelResponse = {}
 
 export type LegacyNewSessionResponse = NewSessionResponse & {
     models?: LegacySessionModelState | null;
+    availableCommands?: AvailableCommand[];
 }
 
 export type LegacyLoadSessionResponse = LoadSessionResponse & {
     models?: LegacySessionModelState | null;
+    availableCommands?: AvailableCommand[];
 }
 
 export type LegacyResumeSessionResponse = ResumeSessionResponse & {
     models?: LegacySessionModelState | null;
+    availableCommands?: AvailableCommand[];
 }
 
 export type ExtMethodRequest =
