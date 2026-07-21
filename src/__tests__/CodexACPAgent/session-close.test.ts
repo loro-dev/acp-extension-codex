@@ -393,6 +393,15 @@ describe("ACP session close", () => {
             cwd: "/test/cwd",
             mcpServers: [],
         });
+        // resumeSession defers the available-commands publish (setTimeout(0));
+        // wait for it so it cannot race the dump clear below.
+        await vi.waitFor(() => {
+            const hasCommandsUpdate = fixture
+                .getAcpConnectionEvents([])
+                .some((event) => event.method === "sessionUpdate"
+                    && event.args?.[0]?.update?.sessionUpdate === "available_commands_update");
+            expect(hasCommandsUpdate).toBe(true);
+        });
         await codexAcpAgent.prompt({
             sessionId,
             prompt: [{type: "text", text: "new prompt"}],
@@ -464,6 +473,16 @@ async function createSession(options: {
     options.configure?.({fixture, codexAcpAgent, codexAcpClient});
 
     await codexAcpAgent.newSession({cwd: "/test/cwd", mcpServers: options.mcpServers ?? []});
+    // The available-commands publish is deferred via setTimeout(0). Wait for it
+    // to land so the dump clears below cannot race it and leak the
+    // available_commands_update into later assertions.
+    await vi.waitFor(() => {
+        const hasCommandsUpdate = fixture
+            .getAcpConnectionEvents([])
+            .some((event) => event.method === "sessionUpdate"
+                && event.args?.[0]?.update?.sessionUpdate === "available_commands_update");
+        expect(hasCommandsUpdate).toBe(true);
+    });
     fixture.clearCodexConnectionDump();
     fixture.clearAcpConnectionDump();
 

@@ -2661,6 +2661,16 @@ describe('ACP server test', { timeout: 40_000 }, () => {
 
         const newSessionResponse = await codexAcpAgent.newSession({cwd: "", mcpServers: []});
 
+        // The available-commands publish is deferred via setTimeout(0). Wait for
+        // it to land before clearing the dump, or it can race past the clear and
+        // leak into the snapshot below.
+        await vi.waitFor(() => {
+            const hasCommandsUpdate = fixture
+                .getAcpConnectionEvents([])
+                .some((event) => event.method === "sessionUpdate"
+                    && event.args?.[0]?.update?.sessionUpdate === "available_commands_update");
+            expect(hasCommandsUpdate).toBe(true);
+        });
         fixture.clearAcpConnectionDump();
         const prompt: acp.ContentBlock[] = [{ type: "text", text: "/logout " }];
         await codexAcpAgent.prompt({sessionId: newSessionResponse.sessionId, prompt: prompt });
