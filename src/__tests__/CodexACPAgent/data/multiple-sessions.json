@@ -9,6 +9,11 @@
         "content": {
           "type": "text",
           "text": "Hello-1"
+        },
+        "_meta": {
+          "lody": {
+            "turnId": "string"
+          }
         }
       }
     }
@@ -25,6 +30,11 @@
         "content": {
           "type": "text",
           "text": "Hello-2"
+        },
+        "_meta": {
+          "lody": {
+            "turnId": "string"
+          }
         }
       }
     }

@@ -23,7 +23,7 @@ import {AgentMode} from "./AgentMode";
 import path from "node:path";
 import {logger} from "./Logger";
 import {sanitizeMcpServerName} from "./McpServerName";
-import {getLodyForkMessageId} from "./AcpExtensions";
+import {getLodyForkTurnId} from "./AcpExtensions";
 import type {
     AccountLoginCompletedNotification,
     AccountUpdatedNotification,
@@ -356,10 +356,7 @@ export class CodexAcpClient {
     ): Promise<SessionMetadata> {
         const additionalDirectories = readAdditionalDirectories(request.cwd, request.additionalDirectories, request._meta);
         await this.refreshSkills(request.cwd, additionalDirectories);
-        const forkMessageId = getLodyForkMessageId(request._meta);
-        const forkTurnId = forkMessageId
-            ? await this.resolveForkTurnIdForMessage(request.sessionId, forkMessageId)
-            : null;
+        const forkTurnId = getLodyForkTurnId(request._meta);
 
         const response = await this.codexClient.threadFork({
             config: await this.createSessionConfig(request.cwd, additionalDirectories, request.mcpServers ?? []),
@@ -380,44 +377,6 @@ export class CodexAcpClient {
             currentServiceTier: response.serviceTier as ServiceTier ?? null,
             additionalDirectories,
         };
-    }
-
-    async resolveForkTurnIdForMessage(threadId: string, messageId: string): Promise<string> {
-        const response = await this.codexClient.threadRead({
-            threadId,
-            includeTurns: true,
-        });
-        const turn = response.thread.turns.find((candidate) =>
-            candidate.items.some((item) => item.type === "agentMessage" && item.id === messageId)
-        );
-        if (!turn) {
-            throw RequestError.invalidRequest("ACP message is not a forkable Codex turn boundary");
-        }
-        return turn.id;
-    }
-
-    async findMessageBeforeTurn(threadId: string, activeTurnId: string): Promise<string> {
-        const response = await this.codexClient.threadRead({
-            threadId,
-            includeTurns: true,
-        });
-        const turns = response.thread.turns;
-        const activeIndex = turns.findIndex((turn) => turn.id === activeTurnId);
-        if (activeIndex < 0) {
-            throw RequestError.invalidRequest("Active turn changed before its preceding message was captured");
-        }
-        for (let index = activeIndex - 1; index >= 0; index--) {
-            const turn = turns[index];
-            if (turn && turn.status !== "inProgress") {
-                const agentMessage = [...turn.items]
-                    .reverse()
-                    .find((item) => item.type === "agentMessage");
-                if (agentMessage) {
-                    return agentMessage.id;
-                }
-            }
-        }
-        throw RequestError.invalidRequest("No completed assistant message exists before the active turn");
     }
 
     async loadSession(request: acp.LoadSessionRequest, onSubscribed?: () => void): Promise<SessionMetadataWithThread> {

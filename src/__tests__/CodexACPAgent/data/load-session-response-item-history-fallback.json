@@ -197,6 +197,11 @@
         "content": {
           "type": "text",
           "text": "The directory contains README.md and src."
+        },
+        "_meta": {
+          "lody": {
+            "turnId": "turn-1"
+          }
         }
       }
     }

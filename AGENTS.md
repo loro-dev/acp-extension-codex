@@ -35,10 +35,9 @@
 - App-server events: prefer `thread/*`, `turn/*`, and `item/*` event surfaces; avoid the deprecated `codex/event/*` API (planned removal). Keep implementations aligned with generated types in `src/app-server` (including `v2` exports).
 - Steer uses app-server `turn/steer` on the tracked active turn. Correlate `clientUserMessageId` and acknowledge only the matching `item/completed(userMessage)`; never emulate steer with a second `turn/start`.
 - Session fork uses app-server `thread/fork` and installs the returned child as an independent ACP
-  session. The temporary `_meta.lody.forkAtMessage` extension carries a standard ACP `messageId`;
-  resolve the containing Codex turn with `thread/read` inside this adapter before setting
-  `thread/fork.lastTurnId`. Never expose Codex turn IDs as ACP message IDs or emulate fork by
-  replaying source history.
+  session. Agent message updates expose their Codex turn id as `_meta.lody.turnId`;
+  `_meta.lody.forkAtTurn.turnId` is passed directly to `thread/fork.lastTurnId`. Do not maintain
+  a message-id mapping or emulate fork by replaying source history.
 - Codex reasoning summaries can echo trailing empty HTML comments from model instructions. Keep
   that provider-specific cleanup in `src/ReasoningText.ts` across live deltas and history replay;
   do not filter assistant text, raw reasoning, or HTML globally in the client renderer.

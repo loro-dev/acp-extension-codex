@@ -14,7 +14,6 @@ import {runLoginCommand} from "./login";
 import {runCodexCli} from "./CodexCli";
 import {
     LEGACY_SET_SESSION_MODEL_METHOD,
-    LODY_FORK_MESSAGE_BEFORE_ACTIVE_TURN_METHOD,
 } from "./AcpExtensions";
 
 const emptyExtensionParamsParser = z.preprocess(
@@ -26,10 +25,6 @@ const legacySetSessionModelParamsParser = z.object({
     sessionId: z.string(),
     modelId: z.string(),
 }).passthrough();
-
-const activeTurnForkMessageParamsParser = z.object({
-    sessionId: z.string().min(1),
-});
 
 if (process.argv.includes("--version")) {
     console.log(`${packageJson.name} ${packageJson.version}`);
@@ -140,8 +135,5 @@ function startAcpServer() {
         .onRequest("authentication/status", emptyExtensionParamsParser, (ctx) => getAgent().extMethod("authentication/status", ctx.params))
         .onRequest("authentication/logout", emptyExtensionParamsParser, (ctx) => getAgent().extMethod("authentication/logout", ctx.params))
         .onRequest(LEGACY_SET_SESSION_MODEL_METHOD, legacySetSessionModelParamsParser, (ctx) => getAgent().extMethod(LEGACY_SET_SESSION_MODEL_METHOD, ctx.params))
-        .onRequest(LODY_FORK_MESSAGE_BEFORE_ACTIVE_TURN_METHOD, activeTurnForkMessageParamsParser, (ctx) =>
-            getAgent().resolveMessageBeforeActiveTurn(ctx.params)
-        )
         .connect(acpJsonStream);
 }

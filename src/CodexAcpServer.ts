@@ -47,7 +47,6 @@ import {
     getCodexSteerId,
     isExtMethodRequest,
     LEGACY_SET_SESSION_MODEL_METHOD,
-    LODY_FORK_MESSAGE_BEFORE_ACTIVE_TURN_METHOD,
 } from "./AcpExtensions";
 import {
     createCollabAgentToolCallUpdate,
@@ -81,7 +80,7 @@ import {isJetBrains2026_1Client} from "./JBUtils";
 import {resolveTerminalOutputMode, type TerminalOutputMode} from "./TerminalOutputMode";
 import {sanitizeReasoningParts} from "./ReasoningText";
 import {
-    createCodexMessagePhaseMeta,
+    createCodexAgentMessageMeta,
     createAgentTextMessageChunk,
     createAgentTextThoughtChunk,
     createUserMessageChunk,
@@ -268,7 +267,7 @@ export class CodexAcpServer {
                         steer: CODEX_STEER_CAPABILITY,
                     },
                     lody: {
-                        forkAtMessage: {version: 1, beforeActiveTurn: true},
+                        forkAtTurn: {version: 1},
                     },
                 },
             },
@@ -667,22 +666,6 @@ export class CodexAcpServer {
             modes: modeState,
             ...this.createSessionConfigOptionsResponse(this.getSessionState(sessionId)),
         };
-    }
-
-    async resolveMessageBeforeActiveTurn(params: {sessionId: string}): Promise<{messageId: string}> {
-        const session = this.sessions.get(params.sessionId);
-        const activeTurnId = session?.currentTurnId;
-        if (!activeTurnId) {
-            throw RequestError.invalidRequest("Session has no active turn");
-        }
-        const messageId = await this.runWithProcessCheck(() =>
-            this.codexAcpClient.findMessageBeforeTurn(params.sessionId, activeTurnId)
-        );
-        logger.log("Resolved ACP message before active turn", {
-            sessionId: params.sessionId,
-            method: LODY_FORK_MESSAGE_BEFORE_ACTIVE_TURN_METHOD,
-        });
-        return {messageId};
     }
 
     async listSessions(params: acp.ListSessionsRequest): Promise<acp.ListSessionsResponse> {
@@ -1205,7 +1188,7 @@ export class CodexAcpServer {
         const threadUpdates: UpdateSessionEvent[] = [];
         for (const turn of thread.turns) {
             for (const item of turn.items) {
-                const updates = await this.createHistoryUpdates(item, sessionState);
+                const updates = await this.createHistoryUpdates(item, sessionState, turn.id);
                 threadUpdates.push(...updates);
             }
         }
@@ -1279,7 +1262,11 @@ export class CodexAcpServer {
         return normalized.length > 0 ? normalized : null;
     }
 
-    private async createHistoryUpdates(item: ThreadItem, sessionState: SessionState): Promise<UpdateSessionEvent[]> {
+    private async createHistoryUpdates(
+        item: ThreadItem,
+        sessionState: SessionState,
+        turnId: string,
+    ): Promise<UpdateSessionEvent[]> {
         switch (item.type) {
             case "userMessage":
                 return this.createUserMessageUpdates(item);
@@ -1288,12 +1275,11 @@ export class CodexAcpServer {
             case "sleep":
                 return [];
             case "agentMessage": {
-                const meta = createCodexMessagePhaseMeta(item.phase);
                 return [{
                     sessionUpdate: "agent_message_chunk",
                     messageId: item.id,
                     content: { type: "text", text: item.text },
-                    ...(meta ? { _meta: meta } : {}),
+                    _meta: createCodexAgentMessageMeta(item.phase, turnId),
                 }];
             }
             case "reasoning":

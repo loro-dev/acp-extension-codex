@@ -178,6 +178,11 @@ describe("CodexEventHandler - thread goal events", () => {
                 type: "text",
                 text: "Because they kept losing interest in `any`.",
             },
+            _meta: {
+                lody: {
+                    turnId: "turn-1",
+                },
+            },
         });
         expect(events[1]!.args[0].update).toEqual({
             sessionUpdate: "session_info_update",

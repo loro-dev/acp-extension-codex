@@ -70,9 +70,8 @@ describe('CodexACPAgent - initialize', () => {
                         },
                     },
                     lody: {
-                        forkAtMessage: {
+                        forkAtTurn: {
                             version: 1,
-                            beforeActiveTurn: true,
                         },
                     },
                 },

@@ -53,6 +53,11 @@
         "content": {
           "type": "text",
           "text": "Hello!"
+        },
+        "_meta": {
+          "lody": {
+            "turnId": "turn-1"
+          }
         }
       }
     }

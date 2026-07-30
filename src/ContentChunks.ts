@@ -10,6 +10,16 @@ export function createCodexMessagePhaseMeta(phase: string | null | undefined): A
     return { codex: { phase } };
 }
 
+export function createCodexAgentMessageMeta(
+    phase: string | null | undefined,
+    turnId: string,
+): AcpMeta {
+    return {
+        ...(phase ? {codex: {phase}} : {}),
+        lody: {turnId},
+    };
+}
+
 export function createUserMessageChunk(content: ContentBlock, messageId?: string, meta?: AcpMeta): UpdateSessionEvent {
     if (messageId) {
         return {
